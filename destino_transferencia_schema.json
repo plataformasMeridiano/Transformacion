@@ -40,5 +40,4 @@
     },
     "required": ["beneficiaries"],
     "additionalProperties": false
-  }
 }
