@@ -1,47 +1,35 @@
 {
-  "name": "destino_transferencia_schema",
-  "strict": true,
-  "schema": {
-    "type": "object",
-    "properties": {
-      "beneficiaries": {
-        "type": "array",
-        "description": "Lista de destinatarios de transferencia detectados en el archivo.",
-        "items": {
-          "type": "object",
-          "properties": {
-            "holder_name": { "type": "string", "description": "Nombre del titular/beneficiario según aparece." },
-            "doc_id": { "type": "string", "description": "CUIT/CUIL/DNI si aparece." },
-            "bank_text": { "type": "string", "description": "Texto del banco tal cual aparece (sin normalizar)." },
-            "bcra_code": { "type": "string", "description": "Código BCRA inferido por prefijo de CBU (primeros 3 dígitos), si corresponde." },
-            "cbu": { "type": "string", "description": "CBU/CBU Alias numérico completo si está." },
-            "alias": { "type": "string", "description": "Alias alfanumérico si está." },
-            "account_number": { "type": "string", "description": "Número de cuenta si figura (no obligatorio)." },
-            "account_type": { "type": "string", "description": "Tipo de cuenta (CC/CA/….) si figura." },
-            "currency": { "type": "string", "description": "Moneda detectada (ARS, USD, etc.)." },
-            "amount": { "type": "number", "description": "Importe individual si el documento lo especifica." },
-            "evidence": { "type": "string", "description": "Frase exacta/campo del documento de donde se extrajo lo principal." },
-            "confidence": { "type": "number", "minimum": 0, "maximum": 1, "description": "Confianza del 0 a 1 para este beneficiario." }
-          },
-          "required": ["bank_text", "confidence"],
-          "additionalProperties": false
-        }
-      },
-      "totals": {
-        "type": "object",
-        "properties": {
-          "amount_sum": { "type": "number", "description": "Suma total si el documento la indica." },
-          "currency": { "type": "string", "description": "Moneda predominante." }
-        },
-        "additionalProperties": false
-      },
-      "warnings": {
-        "type": "array",
-        "items": { "type": "string" },
-        "description": "Avisos de ambigüedad o campos faltantes."
-      }
+  "type": "object",
+  "properties": {
+    "result": {
+      "type": "string",
+      "enum": ["match", "unknown"],
+      "description": "Indicates if the bank could be matched ('match') or if it's unknown."
     },
-    "required": ["beneficiaries"],
-    "additionalProperties": false
-  }
+    "assetId": {
+      "type": "string",
+      "description": "Jira bank identifier."
+    },
+    "canonical": {
+      "type": "string",
+      "description": "Canonical name of the matched bank."
+    },
+    "match_method": {
+      "type": "string",
+      "enum": ["bcra", "alias", "text", "semantic"],
+      "description": "Method used for the bank match."
+    },
+    "confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1,
+      "description": "Confidence score between 0 and 1."
+    },
+    "explanation": {
+      "type": "string",
+      "description": "Reasoning or process explanation of the matching result."
+    }
+  },
+  "required": ["result", "assetId", "canonical", "match_method", "confidence", "explanation"],
+  "additionalProperties": false
 }
