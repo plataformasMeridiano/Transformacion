@@ -43,7 +43,10 @@ class AdcapScraper(BaseScraper):
         caucion_codes  (list[str])   Códigos que identifican cauciones en la grilla.
                                      Default: ["APTOMCONC", "APTOMFUTC"] (ADCAP).
                                      Ejemplo BACS: ["VENTACNG", "COMPRACNG"].
-        tipo_operacion (list[str])   Subtipos a descargar: "Cauciones", "Pases".
+        fce_codes      (list[str])   Códigos que identifican ventas FCE-eCheq.
+                                     Ejemplo ADCAP: ["VCHDIF"].
+        tipo_operacion (list[str])   Subtipos a descargar: "Cauciones", "Pases",
+                                     "Venta FCE-eCheq".
     """
 
     def __init__(self, alyc_config: dict, general_config: dict):
@@ -54,11 +57,16 @@ class AdcapScraper(BaseScraper):
             if codes is not None
             else _DEFAULT_CAUCION_CODES
         )
+        fce_codes = self.opciones.get("fce_codes", [])
+        self._fce_codes = frozenset(c.upper() for c in fce_codes)
 
     def _classify_tipo(self, cells: list[str]) -> str:
-        """Clasifica un boleto como 'Cauciones' o 'Pases' según los valores de la fila."""
+        """Clasifica un boleto como 'Cauciones', 'Pases' o 'Venta FCE-eCheq'."""
         for cell in cells:
-            if cell.strip().upper() in self._caucion_codes:
+            code = cell.strip().upper()
+            if code in self._fce_codes:
+                return "Venta FCE-eCheq"
+            if code in self._caucion_codes:
                 return "Cauciones"
         return "Pases"
 

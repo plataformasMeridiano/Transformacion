@@ -89,7 +89,11 @@
       "opciones": {
         "tipo_operacion": [
           "Pases",
-          "Cauciones"
+          "Cauciones",
+          "Venta FCE-eCheq"
+        ],
+        "fce_codes": [
+          "VCHDIF"
         ],
         "timeout_ms": 30000,
         "cuentas": [
