@@ -270,7 +270,8 @@
         "headless": false,
         "tipo_operacion": [
           "Cauciones",
-          "Pases"
+          "Pases",
+          "Venta FCE-eCheq"
         ],
         "timeout_ms": 60000,
         "cuentas": [

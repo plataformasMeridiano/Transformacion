@@ -347,6 +347,9 @@ class DhalmoreScraper(BaseScraper):
         # Se consulta historical-instrument-equities para cada cuenta.
         # Los boletos van a dest_dir / "Venta FCE-eCheq" / archivo.pdf,
         # lo que hace que DriveUploader los suba al folder raíz de FCE.
+        if "Venta FCE-eCheq" not in tipos_config:
+            return paths_descargados
+
         fce_dir = dest_dir / "Venta FCE-eCheq"
         fce_dir.mkdir(parents=True, exist_ok=True)
 
