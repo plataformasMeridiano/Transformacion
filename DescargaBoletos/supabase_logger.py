@@ -16,8 +16,8 @@ from datetime import datetime, timezone
 logger = logging.getLogger(__name__)
 
 _TABLE_BOLETOS  = "procesamiento_boletos"
-_TABLE_CORRIDAS = "corridas"
-_TABLE_DETALLE  = "corridas_detalle"
+_TABLE_CORRIDAS = "descargas_cauciones_corridas_log"
+_TABLE_DETALLE  = "descargas_cauciones_corridas_detalle_log"
 
 
 def _get_client() -> tuple[str, str]:
@@ -106,16 +106,21 @@ def log_boleto(
 
 # ── corridas (maestro) ────────────────────────────────────────────────────────
 
-def start_corrida(fecha_procesada: str, alycs: list[str] | None = None) -> str | None:
+def start_corrida(
+    fecha_procesada: str,
+    alycs: list[str] | None = None,
+    tipo_boleto: list[str] | None = None,
+) -> str | None:
     """
     Inserta una corrida en estado 'corriendo'.
     Retorna el id UUID o None si falló.
     """
     record = _post(_TABLE_CORRIDAS, {
-        "fecha_procesada":  fecha_procesada,
+        "fecha_procesada":   fecha_procesada,
         "alycs_solicitadas": alycs,
-        "estado":           "corriendo",
-        "fecha_inicio":     datetime.now(timezone.utc).isoformat(),
+        "tipo_boleto":       tipo_boleto,
+        "estado":            "corriendo",
+        "fecha_inicio":      datetime.now(timezone.utc).isoformat(),
     }, return_rep=True)
     if record:
         return record.get("id")

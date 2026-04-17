@@ -1,10 +1,11 @@
 -- Tabla maestra: una fila por ejecución de main.py
-create table if not exists corridas (
+create table if not exists log_descargas_cauciones_corridas (
     id               uuid primary key default gen_random_uuid(),
     fecha_inicio     timestamptz not null default now(),
     fecha_fin        timestamptz,
     estado           text not null default 'corriendo',  -- corriendo | completado | error
     fecha_procesada  date not null,
+    tipo_boleto      text[], -- Cauciones, Pases, FCEs, Bursatil, etc. null = todos
     alycs_solicitadas text[],        -- null = todas las activas
     total_desc       int not null default 0,
     total_sub        int not null default 0,
@@ -13,9 +14,9 @@ create table if not exists corridas (
 );
 
 -- Tabla detalle: una fila por ALYC por ejecución
-create table if not exists corridas_detalle (
+create table if not exists log_descargas_cauciones_corridas_detalle (
     id             uuid primary key default gen_random_uuid(),
-    corrida_id     uuid not null references corridas(id) on delete cascade,
+    corrida_id     uuid not null references log_descargas_cauciones_corridas(id) on delete cascade,
     alyc           text not null,
     sistema        text not null,
     fecha_inicio   timestamptz not null default now(),
@@ -28,6 +29,6 @@ create table if not exists corridas_detalle (
 );
 
 -- Índices útiles
-create index if not exists corridas_fecha_idx on corridas (fecha_procesada desc);
-create index if not exists corridas_detalle_corrida_idx on corridas_detalle (corrida_id);
-create index if not exists corridas_detalle_alyc_idx on corridas_detalle (alyc);
+create index if not exists corridas_fecha_idx on log_descargas_cauciones_corridas (fecha_procesada desc);
+create index if not exists corridas_detalle_corrida_idx on log_descargas_cauciones_corridas_detalle (corrida_id);
+create index if not exists corridas_detalle_alyc_idx on log_descargas_cauciones_corridas_detalle (alyc);
