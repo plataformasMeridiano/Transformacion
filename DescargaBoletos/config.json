@@ -68,6 +68,7 @@
       "usuario": "${ALLARIA_USUARIO}",
       "contrasena": "${ALLARIA_PASSWORD}",
       "opciones": {
+        "headless": false,
         "caucion_codes": [
           "APCOLCON",
           "APCOLFUT"
