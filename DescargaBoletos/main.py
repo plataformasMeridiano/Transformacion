@@ -19,7 +19,11 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from drive_uploader import DriveUploader, nro_from_filename
-from supabase_logger import log_boleto
+from supabase_logger import (
+    log_boleto,
+    start_corrida, finish_corrida,
+    start_alyc_detalle, finish_alyc_detalle,
+)
 from scrapers.alyc_sistemaA import PuenteScraper
 from scrapers.alyc_sistemaB import AdcapScraper
 from scrapers.alyc_sistemaC import WinScraper
@@ -201,13 +205,36 @@ async def main() -> int:
         logger.warning("No hay ALYCs activas en config.json — nada que hacer")
         return 0
 
+    # ── Registrar inicio de corrida en Supabase ───────────────────────────
+    alyc_nombres = [a["nombre"] for a in alycs]
+    corrida_id = start_corrida(fecha, alycs=alyc_nombres)
+    if corrida_id:
+        logger.info("Corrida registrada en Supabase — id=%s", corrida_id)
+    else:
+        logger.warning("No se pudo registrar la corrida en Supabase (continúa igual)")
+
     # Procesar cada ALYC secuencialmente (un browser a la vez)
     resultados: list[AlycResult] = []
     for alyc_cfg in alycs:
         logger.info("-" * 40)
         logger.info("Procesando: %s (%s)", alyc_cfg["nombre"], alyc_cfg["sistema"])
+
+        detalle_id = None
+        if corrida_id:
+            detalle_id = start_alyc_detalle(corrida_id, alyc_cfg["nombre"], alyc_cfg["sistema"])
+
         result = await process_alyc(alyc_cfg, general, fecha, uploader)
         resultados.append(result)
+
+        if detalle_id:
+            finish_alyc_detalle(
+                detalle_id,
+                desc_count=result.descargados,
+                sub_count=result.subidos,
+                err_count=result.total_errores,
+                estado="ok" if result.ok else "error",
+                error_detalle=result.error,
+            )
 
     # ── Resumen final ─────────────────────────────────────────────────────
     logger.info("=" * 60)
@@ -230,6 +257,11 @@ async def main() -> int:
     logger.info("%-22s  %-6s  %-12d  %-8d  %-14d",
                 "TOTAL", "", total_desc, total_sub, total_err)
     logger.info("=" * 60)
+
+    # ── Registrar fin de corrida en Supabase ──────────────────────────────
+    if corrida_id:
+        estado_final = "completado" if total_err == 0 else "error"
+        finish_corrida(corrida_id, total_desc, total_sub, total_err, estado=estado_final)
 
     return 0 if total_err == 0 else 1
 
