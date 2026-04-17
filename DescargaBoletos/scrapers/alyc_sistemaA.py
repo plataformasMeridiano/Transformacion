@@ -176,14 +176,22 @@ class PuenteScraper(BaseScraper):
                     await asyncio.sleep(2)
 
                     # Los inputs de fecha están controlados por AngularJS.
-                    # Usamos teclado real (triple_click + type + Tab) para garantizar
-                    # que el ng-model se actualice — más robusto que setter/events,
-                    # especialmente cuando el campo ya tiene un valor Angular previo.
-                    for sel, val in [("#fechaDesde", fecha_fmt), ("#fechaHasta", fecha_fmt)]:
-                        await page.click(sel, click_count=3)  # selecciona todo el texto
-                        await page.keyboard.type(val)
-                        await page.keyboard.press("Tab")       # dispara blur → Angular valida
-                        await asyncio.sleep(0.3)
+                    # En modo headless/xvfb el keyboard.type no actualiza el ng-model.
+                    # Usamos dispatchEvent JS (input + change + blur) que funciona en
+                    # cualquier modo de display.
+                    await page.evaluate(f"""
+                        () => {{
+                            ['#fechaDesde', '#fechaHasta'].forEach(sel => {{
+                                const el = document.querySelector(sel);
+                                if (!el) return;
+                                el.value = '{fecha_fmt}';
+                                ['input', 'change', 'blur'].forEach(ev =>
+                                    el.dispatchEvent(new Event(ev, {{bubbles: true}}))
+                                );
+                            }});
+                        }}
+                    """)
+                    await asyncio.sleep(0.5)
 
                     # Verificar que los valores quedaron en el DOM
                     val_desde = await page.input_value("#fechaDesde")
@@ -196,23 +204,58 @@ class PuenteScraper(BaseScraper):
                         timeout=timeout,
                     ) as resp_info:
                         await page.click("#traerMovimientos")
-                    await resp_info.value
+                    resp = await resp_info.value
                     await asyncio.sleep(1)
 
-                    # ── Extraer links de descarga ───────────────────────────
-                    movimientos = await page.evaluate("""
-                        () => [...document.querySelectorAll(
-                                'a[href*="descargar-pdf-movimiento"]')]
-                                .map(a => ({
-                                    href: a.getAttribute('href'),
-                                    desc: a.innerText.trim(),
-                                }))
+                    # Intentar leer el JSON de respuesta para validar fechas
+                    try:
+                        resp_json = await resp.json()
+                        total_server = len(resp_json) if isinstance(resp_json, list) else -1
+                        logger.info("[%s]   Respuesta servidor: %d items", self.nombre, total_server)
+                    except Exception:
+                        resp_json = None
+
+                    # ── Extraer links de descarga — solo los del resultado actual ─
+                    # Navegar de nuevo a la página resetea el DOM entre búsquedas
+                    # y evita que links de búsquedas anteriores se acumulen.
+                    movimientos = await page.evaluate(f"""
+                        () => {{
+                            const fecha = '{fecha_fmt}';
+                            return [...document.querySelectorAll(
+                                    'a[href*="descargar-pdf-movimiento"]')]
+                                    .map(a => {{
+                                        const row = a.closest('tr');
+                                        const cells = row
+                                            ? [...row.querySelectorAll('td')]
+                                                .map(td => td.innerText.trim())
+                                            : [];
+                                        return {{
+                                            href: a.getAttribute('href'),
+                                            cells: cells,
+                                        }};
+                                    }});
+                        }}
                     """)
-                    logger.info("[%s]   Movimientos: %d", self.nombre, len(movimientos))
+
+                    # Filtro client-side por fecha de concertación como salvaguarda.
+                    # El servidor debería devolver solo la fecha pedida, pero si falla
+                    # (xvfb timing, Angular model no actualizado) esto evita descargar todo.
+                    # La fecha de concertación suele estar en cells[2] (dd/mm/yyyy).
+                    movimientos_filtrados = [
+                        m for m in movimientos
+                        if not m["cells"]          # sin tabla: incluir (no podemos filtrar)
+                        or len(m["cells"]) < 3     # pocas celdas: incluir
+                        or m["cells"][2] == fecha_fmt   # fecha concertación correcta
+                        or m["cells"][1] == fecha_fmt   # o fecha liquidación (fallback)
+                    ]
+                    logger.info("[%s]   Movimientos: %d (de %d en DOM, filtro fecha=%s)",
+                                self.nombre, len(movimientos_filtrados),
+                                len(movimientos), fecha_fmt)
+                    movimientos = movimientos_filtrados
 
                     # ── Descargar PDFs ──────────────────────────────────────
                     for mov in movimientos:
-                        m = _RE_ID_MOV.search(mov["href"])
+                        m = _RE_ID_MOV.search(mov.get("href", ""))
                         if not m:
                             logger.warning("[%s] Sin idMovimiento en %s", self.nombre, mov["href"])
                             continue
