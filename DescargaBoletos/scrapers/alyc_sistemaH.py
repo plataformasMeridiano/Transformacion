@@ -180,6 +180,29 @@ class AllariaScraper(AdcapScraper):
         logger.info("[%s] Login exitoso — URL: %s", self.nombre, page.url)
         return True
 
+    # ── Navegación a BOLETOS via Angular (no goto) ───────────────────────────
+
+    async def _navegar_boletos(self, timeout: int) -> None:
+        """
+        Override: Allaria no permite goto(desktop.html#!/boletos) — redirige a
+        #!/tenenciaval. Usamos changeCurrentView('/boletos') via scope Angular.
+        """
+        page = self._page
+        result = await page.evaluate("""
+            () => {
+                const el = document.querySelector('[ng-controller]');
+                if (!el) return 'no-ng-controller';
+                const scope = angular.element(el).scope();
+                if (!scope) return 'no-scope';
+                if (typeof scope.changeCurrentView !== 'function') return 'no-changeCurrentView';
+                scope.changeCurrentView('/boletos', null, false, false);
+                return 'ok';
+            }
+        """)
+        logger.debug("[%s] changeCurrentView /boletos: %s", self.nombre, result)
+        await asyncio.sleep(4)
+        logger.info("[%s] Vista BOLETOS cargada — URL: %s", self.nombre, page.url)
+
     # ── Filtro de fecha: selecciona "Por concertación" antes de filtrar ───────
 
     async def _aplicar_filtro_fecha(self, fecha_iso: str) -> None:
