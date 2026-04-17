@@ -1,0 +1,36 @@
+{
+    "type": "object",
+    "properties": {
+      "destinatarios": {
+        "type": "array",
+        "description": "Lista de destinatarios de transferencia detectados en el archivo.",
+        "items": {
+          "type": "object",
+          "properties": {
+            "titular": { "type": "string", "description": "Nombre del titular/beneficiario según aparece." },
+            "doc_id": { "type": "string", "description": "CUIT/CUIL/DNI si aparece." },
+            "nombre_banco": { "type": "string", "description": "Texto del banco tal cual aparece (sin normalizar)." },
+            "codigo_bcra": { "type": "string", "description": "Código BCRA inferido por prefijo de CBU (primeros 3 dígitos), si corresponde." },
+            "cbu": { "type": "string", "description": "CBU/CBU Alias numérico completo si está." },
+            "cvu": { "type": "string", "description": "CVU Alias si es una cuenta asociada a Mercado Pago." },
+            "alias": { "type": "string", "description": "Alias alfanumérico si está." },
+            "numero_cuenta": { "type": "string", "description": "Número de cuenta si figura (no obligatorio)." },
+            "tipo_cuenta": { "type": "string", "description": "Tipo de cuenta (CC/CA/….) si figura." },
+            "moneda": { "type": "string", "description": "Moneda detectada (ARS, USD, etc.)." },
+            "monto": { "type": "number", "description": "Importe individual si el documento lo especifica." },
+            "evidencia": { "type": "string", "description": "Frase exacta/campo del documento de donde se extrajo lo principal." },
+            "confianza": { "type": "number", "minimum": 0, "maximum": 1, "description": "Confianza del 0 a 1 para este beneficiario." }
+          },
+          "required": ["nombre_banco", "confianza"],
+          "additionalProperties": false
+        }
+      },
+      "warnings": {
+        "type": "array",
+        "items": { "type": "string" },
+        "description": "Avisos de ambigüedad o campos faltantes."
+      }
+    },
+    "required": ["beneficiaries"],
+    "additionalProperties": false
+}
