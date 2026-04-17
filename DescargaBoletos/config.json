@@ -1,0 +1,285 @@
+{
+  "general": {
+    "download_dir": "downloads",
+    "log_dir": "logs",
+    "days_back": 1,
+    "headless": false
+  },
+  "google_drive": {
+    "credentials_file": "credentials/gdrive_service_account.json",
+    "root_folder_id": "${GDRIVE_ROOT_FOLDER_ID}",
+    "tipo_folder_overrides": {
+      "Venta FCE-eCheq": "1NbLIYvULKie7qhhKfKCZ3JW4kJg6uBVY"
+    }
+  },
+  "alycs": [
+    {
+      "nombre": "Puente",
+      "sistema": "sistemaA",
+      "activo": true,
+      "url_login": "https://puentenet.com/usuario/login",
+      "documento": "${PUENTE_DOCUMENTO}",
+      "usuario": "${PUENTE_USUARIO}",
+      "contrasena": "${PUENTE_PASSWORD}",
+      "opciones": {
+        "headless": false,
+        "tipo_operacion": [
+          "Pases",
+          "Cauciones"
+        ],
+        "timeout_ms": 30000
+      }
+    },
+    {
+      "nombre": "WIN",
+      "sistema": "sistemaC",
+      "activo": true,
+      "url_login": "https://clientes.winsa.com.ar/",
+      "documento": "${WIN_DOCUMENTO}",
+      "usuario": "${WIN_USUARIO}",
+      "contrasena": "${WIN_PASSWORD}",
+      "opciones": {
+        "tipo_operacion": [
+          "Pases",
+          "Cauciones"
+        ],
+        "timeout_ms": 30000,
+        "cuentas": [
+          {
+            "nombre": "MeridianoNorte",
+            "comitente": "50015"
+          },
+          {
+            "nombre": "Pamat",
+            "comitente": "50017"
+          },
+          {
+            "nombre": "Clinicaltech",
+            "comitente": "50203"
+          }
+        ]
+      }
+    },
+    {
+      "nombre": "Allaria",
+      "sistema": "sistemaH",
+      "activo": true,
+      "url_login": "https://allaria-ssl.allaria.com.ar/AllariaOnline/VBolsaNet/login.html#!/login",
+      "usuario": "${ALLARIA_USUARIO}",
+      "contrasena": "${ALLARIA_PASSWORD}",
+      "opciones": {
+        "caucion_codes": [
+          "APCOLCON",
+          "APCOLFUT"
+        ],
+        "tipo_operacion": [
+          "Venta FCE-eCheq",
+          "Cauciones"
+        ],
+        "timeout_ms": 30000
+      }
+    },
+    {
+      "nombre": "ADCAP",
+      "sistema": "sistemaB",
+      "activo": true,
+      "url_login": "https://micuenta2.ad-cap.com.ar/ehomedmz/vbhome/login.html#!/login",
+      "usuario": "${ADCAP_USUARIO}",
+      "contrasena": "${ADCAP_PASSWORD}",
+      "opciones": {
+        "tipo_operacion": [
+          "Pases",
+          "Cauciones"
+        ],
+        "timeout_ms": 30000,
+        "cuentas": [
+          {
+            "nombre": "MeridianoNorte",
+            "label": "MERIDIANO NORTE SA"
+          },
+          {
+            "nombre": "Pamat",
+            "label": "PAMAT SA"
+          }
+        ]
+      }
+    },
+    {
+      "nombre": "Criteria",
+      "sistema": "sistemaB",
+      "activo": true,
+      "url_login": "https://clientes.criteria.com.ar/vbHome/login.html#!/login",
+      "usuario": "${CRITERIA_USUARIO}",
+      "contrasena": "${CRITERIA_PASSWORD}",
+      "opciones": {
+        "tipo_operacion": [
+          "Pases",
+          "Cauciones"
+        ],
+        "timeout_ms": 30000
+      }
+    },
+    {
+      "nombre": "DAValores",
+      "sistema": "sistemaB",
+      "activo": true,
+      "url_login": "https://clientes.davalores.com.ar/VBHome/login.html#!/login",
+      "usuario": "${DA_VALORES_USUARIO}",
+      "contrasena": "${DA_VALORES_PASSWORD}",
+      "opciones": {
+        "tipo_operacion": [
+          "Pases",
+          "Cauciones"
+        ],
+        "timeout_ms": 30000
+      }
+    },
+    {
+      "nombre": "BACS",
+      "sistema": "sistemaB",
+      "activo": true,
+      "url_login": "https://alyc.torontoinversiones.com.ar/VBhome/login.html#!/login",
+      "usuario": "${BACS_USUARIO}",
+      "contrasena": "${BACS_PASSWORD}",
+      "opciones": {
+        "caucion_codes": [],
+        "tipo_operacion": [
+          "Pases"
+        ],
+        "timeout_ms": 30000
+      }
+    },
+    {
+      "nombre": "MaxCapital",
+      "sistema": "sistemaE",
+      "activo": true,
+      "url_login": "https://home.max.capital/",
+      "usuario": "${MAX_USUARIO}",
+      "contrasena": "${MAX_PASSWORD}",
+      "opciones": {
+        "headless": false,
+        "caucion_codes": [
+          "APTOMCONC",
+          "APTOMFUTC"
+        ],
+        "tipo_operacion": [
+          "Cauciones",
+          "Pases"
+        ],
+        "timeout_ms": 45000,
+        "cuentas": [
+          {
+            "nombre": "MeridianoNorte",
+            "numero": 20759
+          },
+          {
+            "nombre": "Pamat",
+            "numero": 20774
+          }
+        ]
+      }
+    },
+    {
+      "nombre": "ConoSur",
+      "sistema": "sistemaD",
+      "activo": true,
+      "url_login": "https://virtualbroker-conosur.aunesa.com/auth/signin",
+      "usuario": "${CONOSUR_USUARIO}",
+      "contrasena": "${CONOSUR_PASSWORD}",
+      "opciones": {
+        "cuenta": "3003",
+        "caucion_conceptos": [
+          "Tomadora",
+          "Colocadora"
+        ],
+        "tipo_operacion": [
+          "Cauciones",
+          "Pases"
+        ],
+        "timeout_ms": 30000
+      }
+    },
+    {
+      "nombre": "ConoSur",
+      "sistema": "sistemaD",
+      "activo": true,
+      "url_login": "https://virtualbroker-conosur.aunesa.com/auth/signin",
+      "usuario": "${CONOSUR_PAMAT_USUARIO}",
+      "contrasena": "${CONOSUR_PAMAT_PASSWORD}",
+      "opciones": {
+        "cuenta": "3087",
+        "caucion_conceptos": [
+          "Tomadora",
+          "Colocadora"
+        ],
+        "tipo_operacion": [
+          "Cauciones",
+          "Pases"
+        ],
+        "timeout_ms": 30000
+      }
+    },
+    {
+      "nombre": "MetroCorp",
+      "sistema": "sistemaF",
+      "activo": true,
+      "url_login": "https://be.bancocmf.com.ar/",
+      "documento": "${METRO_DOCUMENTO}",
+      "usuario": "${METRO_USUARIO}",
+      "contrasena": "${METRO_PASSWORD}",
+      "opciones": {
+        "caucion_keywords": [
+          "CAUC",
+          "COLOCACION"
+        ],
+        "caucion_exclude_keywords": [
+          "GARANTIA CAUCION"
+        ],
+        "tipo_operacion": [
+          "Cauciones"
+        ],
+        "timeout_ms": 30000,
+        "cuentas": [
+          {
+            "nombre": "MeridianoNorte",
+            "display_name": "MERIDIANO NORTE SA",
+            "cuenta": "33460",
+            "id_environment": 407
+          },
+          {
+            "nombre": "Pamat",
+            "display_name": "PAMAT SA",
+            "cuenta": "33800",
+            "id_environment": 406
+          }
+        ]
+      }
+    },
+    {
+      "nombre": "Dhalmore",
+      "sistema": "sistemaG",
+      "activo": true,
+      "url_login": "https://clientes.dhalmorecap.com/",
+      "usuario": "${DHALMORE_USUARIO}",
+      "contrasena": "${DHALMORE_PASSWORD}",
+      "opciones": {
+        "headless": false,
+        "tipo_operacion": [
+          "Cauciones",
+          "Pases"
+        ],
+        "timeout_ms": 60000,
+        "cuentas": [
+          {
+            "nombre": "MeridianoNorte",
+            "customer_account_id": 56553
+          },
+          {
+            "nombre": "Pamat",
+            "customer_account_id": 56555
+          }
+        ]
+      }
+    }
+  ]
+}

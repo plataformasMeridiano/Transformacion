@@ -1,0 +1,49 @@
+# Credenciales y secretos
+.env
+*.env
+credentials/
+*.pem
+*.key
+*.p12
+
+# Perfiles de browser (sesiones persistentes)
+browser_profiles/
+
+# Archivos descargados y logs
+downloads/
+logs/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+dist/
+build/
+
+# VS Code
+.vscode/
+
+# Screenshots de debugging
+*.png
+*.jpg
+*.jpeg
+
+# PDFs de test
+*.pdf
+
+# Archivos de captura/diagnóstico de API
+*_api_capture.json
+reporte_cruce_jira.csv
+
+# Claude Code local settings
+.claude/
+
+# Supabase temp
+Supabase/supabase/.temp/
+Supabase/supabase/.branches/
+
+# OS
+.DS_Store
+Thumbs.db

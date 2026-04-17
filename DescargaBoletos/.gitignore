@@ -1,0 +1,18 @@
+# Credenciales y secretos — NUNCA subir
+.env
+credentials/
+
+# Archivos descargados y logs — no pertenecen al repo
+downloads/
+logs/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+
+# IDEs
+.vscode/
+.idea/
