@@ -199,7 +199,12 @@ class AllariaScraper(AdcapScraper):
             await page.wait_for_timeout(3000)
 
             # Si ya salimos de la pantalla de OTP, terminamos
-            post_otp_text = await page.evaluate("document.body.innerText.slice(0, 200)")
+            try:
+                post_otp_text = await page.evaluate("document.body.innerText.slice(0, 200)")
+            except Exception:
+                # document.body es null → página navegando = TOTP aceptado
+                logger.info("[%s] TOTP aceptado (página navegando)", self.nombre)
+                return
             if not any(kw in post_otp_text.lower() for kw in ("código", "verificación", "otp", "incorrecto", "invalid")):
                 logger.info("[%s] TOTP aceptado", self.nombre)
                 return
