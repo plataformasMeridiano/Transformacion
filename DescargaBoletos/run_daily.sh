@@ -16,13 +16,14 @@ echo "===============================" >> "$LOG"
 echo "run_daily.sh — $(date)" >> "$LOG"
 echo "===============================" >> "$LOG"
 
-# Últimos 2 días hábiles
-AYER=$(date -d "yesterday" +%Y-%m-%d)
+# Referencia temporal para Cocos y Zapier
 ANTES=$(date -d "2 days ago" +%Y-%m-%d)
 
-# 1. Descarga de boletos (últimos 2 días, xvfb-run para scrapers headless=false)
-echo "[1/2] Descargando boletos $ANTES → $AYER..." | tee -a "$LOG"
-xvfb-run --auto-servernum python3 batch_download.py "$ANTES" "$AYER" >> "$LOG" 2>&1
+# 1. Descarga de boletos — modo delta automático.
+#    --mas-una-semana: en el cron procesamos siempre el delta completo sin límite
+#    (el límite de 7 días es solo para uso interactivo sin la flag).
+echo "[1/3] Descargando boletos (delta)..." | tee -a "$LOG"
+xvfb-run --auto-servernum python3 batch_download.py --delta --mas-una-semana >> "$LOG" 2>&1
 EXIT1=$?
 echo "batch_download exit=$EXIT1" | tee -a "$LOG"
 

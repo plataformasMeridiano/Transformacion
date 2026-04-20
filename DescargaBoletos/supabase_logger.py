@@ -186,3 +186,62 @@ def finish_alyc_detalle(
     if error_detalle:
         payload["error_detalle"] = error_detalle
     return _patch(_TABLE_DETALLE, detalle_id, payload)
+
+
+# ── consultas de estado ───────────────────────────────────────────────────────
+
+def get_fechas_completadas(active_alycs: list[str], desde: str) -> dict[str, set[str]]:
+    """
+    Retorna, para cada fecha >= desde, el conjunto de ALYCs que tienen al
+    menos un detalle con estado='ok' en alguna corrida de esa fecha.
+
+    Resultado: { "2026-04-17": {"Puente", "WIN", ...}, ... }
+
+    Sirve para detectar qué fechas faltan: si el set de ALYCs para una fecha
+    no es un superconjunto de active_alycs, esa fecha necesita reprocesarse.
+    """
+    try:
+        url, key = _get_client()
+        headers = {
+            "apikey":        key,
+            "Authorization": f"Bearer {key}",
+            "Accept":        "application/json",
+            "Range":         "0-9999",   # hasta 10 000 filas
+        }
+
+        # ── Paso 1: corridas con fecha_procesada >= desde ─────────────────
+        req = urllib.request.Request(
+            f"{url}/rest/v1/{_TABLE_CORRIDAS}"
+            f"?fecha_procesada=gte.{desde}&select=id,fecha_procesada",
+            headers=headers,
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            corridas = json.loads(resp.read())
+
+        if not corridas:
+            return {}
+
+        corrida_map: dict[str, str] = {c["id"]: c["fecha_procesada"] for c in corridas}
+        ids_csv = ",".join(corrida_map.keys())
+
+        # ── Paso 2: detalles con estado='ok' para esas corridas ───────────
+        req2 = urllib.request.Request(
+            f"{url}/rest/v1/{_TABLE_DETALLE}"
+            f"?corrida_id=in.({ids_csv})&estado=eq.ok&select=corrida_id,alyc",
+            headers=headers,
+        )
+        with urllib.request.urlopen(req2, timeout=15) as resp:
+            detalles = json.loads(resp.read())
+
+        # ── Construir mapa fecha → {alycs ok} ────────────────────────────
+        result: dict[str, set[str]] = {}
+        for d in detalles:
+            fecha = corrida_map.get(d["corrida_id"])
+            if fecha:
+                result.setdefault(fecha, set()).add(d["alyc"])
+
+        return result
+
+    except Exception as exc:
+        logger.warning("get_fechas_completadas falló: %s", exc)
+        return {}
