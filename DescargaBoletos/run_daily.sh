@@ -23,7 +23,7 @@ ANTES=$(date -d "2 days ago" +%Y-%m-%d)
 #    --mas-una-semana: en el cron procesamos siempre el delta completo sin límite
 #    (el límite de 7 días es solo para uso interactivo sin la flag).
 echo "[1/3] Descargando boletos (delta)..." | tee -a "$LOG"
-xvfb-run --auto-servernum python3 batch_download.py --delta --mas-una-semana >> "$LOG" 2>&1
+xvfb-run --auto-servernum python3 batch_download.py --delta >> "$LOG" 2>&1
 EXIT1=$?
 echo "batch_download exit=$EXIT1" | tee -a "$LOG"
 

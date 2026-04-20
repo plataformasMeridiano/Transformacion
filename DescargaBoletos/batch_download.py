@@ -300,13 +300,12 @@ async def main() -> int:
         if not fechas:
             return 0  # todo al día
         if not args.mas_una_semana and len(fechas) > 7:
-            # El logger todavía no está configurado; escribir directo a stderr
-            print(
-                f"ERROR: delta tiene {len(fechas)} fechas faltantes (> 7 días). "
-                "Usar --mas-una-semana para procesar sin límite.",
-                file=sys.stderr,
+            logging.getLogger("batch").warning(
+                "Delta: %d fechas faltantes — limitando a 7. "
+                "Usar --mas-una-semana para procesar el delta completo.",
+                len(fechas),
             )
-            return 1
+            fechas = fechas[:7]
         tag = f"delta_{fechas[0]}_a_{fechas[-1]}"
         inicio = date.fromisoformat(fechas[0])
         fin    = date.fromisoformat(fechas[-1])
