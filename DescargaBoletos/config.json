@@ -69,6 +69,7 @@
       "contrasena": "${ALLARIA_PASSWORD}",
       "opciones": {
         "headless": false,
+        "totp_secret": "${ALLARIA_TOTP_SECRET}",
         "caucion_codes": [
           "APCOLCON",
           "APCOLFUT"

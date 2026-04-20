@@ -2,6 +2,7 @@ import asyncio
 import logging
 from pathlib import Path
 
+import pyotp
 from playwright.async_api import async_playwright
 
 from .alyc_sistemaB import AdcapScraper
@@ -32,21 +33,18 @@ class AllariaScraper(AdcapScraper):
         1. Navegar a https://allaria.com.ar/Account/RedirectLogin
         2. Si ya redirige a VBolsaNet (sesión Auth0 activa) → listo
         3. Si aparece formulario Auth0:
-            a. Completar email → Continuar
-            b. Completar contraseña → Ingresar
-            c. Si pide 2FA → lanzar excepción (hay que renovar perfil)
+            a. Completar email + contraseña → Ingresar
+            b. Si pide TOTP → generar código con pyotp y completarlo automáticamente
         4. Esperar redirect a AllariaOnline/VBolsaNet
 
-    Setup previo:
-        python3 setup_allaria_profile.py
-        → Completar login + 2FA manualmente.
-        → El perfil queda guardado en browser_profiles/allaria/
-        → Device trust válido por 30 días.
+    El secret TOTP se configura en opciones.totp_secret (referencia a ${ALLARIA_TOTP_SECRET}).
     """
 
     def __init__(self, alyc_config: dict, general_config: dict):
         super().__init__(alyc_config, general_config)
         self._persistent_context = None
+        totp_raw = self.opciones.get("totp_secret", "")
+        self._totp = pyotp.TOTP(self._resolve(totp_raw)) if totp_raw else None
 
     # ── Lifecycle: persistent context ─────────────────────────────────────────
 
@@ -131,15 +129,16 @@ class AllariaScraper(AdcapScraper):
 
         await page.wait_for_timeout(4000)
 
-        # ── Verificar si pide 2FA ─────────────────────────────────────────────
+        # ── Verificar si pide TOTP (2FA) ─────────────────────────────────────
         post_url = page.url
         if "allaria.com.ar" in post_url and "AllariaOnline" not in post_url and "VBolsaNet" not in post_url:
             page_text = await page.evaluate("document.body.innerText.slice(0, 500)")
             if any(kw in page_text.lower() for kw in ("código", "verificación", "otp", "autenticador", "authenticator")):
-                raise RuntimeError(
-                    f"[{self.nombre}] 2FA requerido — ejecutar setup_allaria_profile.py "
-                    "para renovar la sesión del perfil."
-                )
+                if not self._totp:
+                    raise RuntimeError(
+                        f"[{self.nombre}] 2FA requerido pero no hay totp_secret configurado."
+                    )
+                await self._completar_totp(page, timeout)
 
         # ── Esperar a que Auth0 complete el redirect (a allaria.com.ar o a VBolsaNet) ──
         try:
@@ -179,6 +178,37 @@ class AllariaScraper(AdcapScraper):
 
         logger.info("[%s] Login exitoso — URL: %s", self.nombre, page.url)
         return True
+
+    # ── TOTP (2FA) ───────────────────────────────────────────────────────────
+
+    async def _completar_totp(self, page, timeout: int) -> None:
+        """
+        Genera el código TOTP actual y lo introduce en el formulario Auth0.
+        Reintenta una vez si el primer código ya venció (borde de ventana de 30s).
+        """
+        logger.info("[%s] TOTP requerido — generando código", self.nombre)
+
+        otp_input = page.locator("input[name='code'], input[type='text'], input[type='number']").first
+        await otp_input.wait_for(state="visible", timeout=timeout)
+
+        for intento in range(2):
+            codigo = self._totp.now()
+            logger.info("[%s] TOTP intento %d — código: %s", self.nombre, intento + 1, codigo)
+            await otp_input.fill(codigo)
+            await page.locator("button[type='submit']").first.click()
+            await page.wait_for_timeout(3000)
+
+            # Si ya salimos de la pantalla de OTP, terminamos
+            post_otp_text = await page.evaluate("document.body.innerText.slice(0, 200)")
+            if not any(kw in post_otp_text.lower() for kw in ("código", "verificación", "otp", "incorrecto", "invalid")):
+                logger.info("[%s] TOTP aceptado", self.nombre)
+                return
+
+            if intento == 0:
+                logger.warning("[%s] TOTP rechazado — esperando nueva ventana y reintentando", self.nombre)
+                await page.wait_for_timeout(32_000)  # esperar que expire el código actual
+
+        raise RuntimeError(f"[{self.nombre}] TOTP rechazado dos veces — verificar secret configurado.")
 
     # ── Navegación a BOLETOS via Angular (no goto) ───────────────────────────
 
