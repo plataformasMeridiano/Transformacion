@@ -9,8 +9,8 @@ Cada (fecha, ALYC) procesada se registra en Supabase
 detectar automáticamente qué fechas faltan y procesarlas.
 
 Uso:
-    python3 batch_download.py --delta                      # fechas faltantes (max 7 días)
-    python3 batch_download.py --delta --mas-una-semana     # fechas faltantes sin límite
+    python3 batch_download.py --delta                      # últimos 7 días hábiles
+    python3 batch_download.py --delta --mas-una-semana     # gap completo (todas las fechas faltantes)
     python3 batch_download.py 2026-04-17                   # una fecha exacta
     python3 batch_download.py 2026-04-10 2026-04-17        # rango explícito
 """
@@ -241,19 +241,19 @@ def _parse_args() -> argparse.Namespace:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Ejemplos:\n"
-            "  batch_download.py --delta\n"
-            "  batch_download.py --delta --mas-una-semana\n"
-            "  batch_download.py 2026-04-17\n"
-            "  batch_download.py 2026-04-10 2026-04-17\n"
+            "  batch_download.py --delta                    # últimos 7 días hábiles\n"
+            "  batch_download.py --delta --mas-una-semana   # gap completo\n"
+            "  batch_download.py 2026-04-17                 # fecha exacta\n"
+            "  batch_download.py 2026-04-10 2026-04-17      # rango\n"
         ),
     )
     parser.add_argument(
         "--delta", action="store_true",
-        help="Detectar y procesar fechas faltantes (máx 7 días sin --mas-una-semana)",
+        help="Procesar los últimos 7 días hábiles",
     )
     parser.add_argument(
         "--mas-una-semana", dest="mas_una_semana", action="store_true",
-        help="Con --delta: procesar más de 7 días de atraso sin confirmación",
+        help="Con --delta: procesar el gap completo (todas las fechas sin corrida ok en Supabase)",
     )
     parser.add_argument(
         "rango", nargs="*",
@@ -296,16 +296,23 @@ async def main() -> int:
 
     # ── Determinar fechas a procesar ──────────────────────────────────────
     if args.delta:
-        fechas = _find_delta_fechas(alycs)
-        if not fechas:
-            return 0  # todo al día
-        if not args.mas_una_semana and len(fechas) > 7:
-            logging.getLogger("batch").warning(
-                "Delta: %d fechas faltantes — limitando a 7. "
-                "Usar --mas-una-semana para procesar el delta completo.",
-                len(fechas),
-            )
-            fechas = fechas[:7]
+        if args.mas_una_semana:
+            # Gap completo: todas las fechas faltantes según Supabase
+            fechas = _find_delta_fechas(alycs)
+            if not fechas:
+                return 0  # todo al día
+        else:
+            # Modo normal: últimos 7 días hábiles, sin importar qué hay en la BD
+            yesterday = date.today() - timedelta(days=1)
+            fin = yesterday
+            # Retroceder hasta acumular 7 días hábiles
+            dias, d = [], fin
+            while len(dias) < 7:
+                if d.weekday() < 5:
+                    dias.append(d)
+                d -= timedelta(days=1)
+            inicio = min(dias)
+            fechas = business_days(inicio, fin)
         tag = f"delta_{fechas[0]}_a_{fechas[-1]}"
         inicio = date.fromisoformat(fechas[0])
         fin    = date.fromisoformat(fechas[-1])
