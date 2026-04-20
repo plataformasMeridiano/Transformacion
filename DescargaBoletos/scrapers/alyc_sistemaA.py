@@ -237,17 +237,27 @@ class PuenteScraper(BaseScraper):
                         }}
                     """)
 
-                    # Filtro client-side por fecha de concertación como salvaguarda.
+                    # Filtro client-side ESTRICTO por fecha de concertación.
                     # El servidor debería devolver solo la fecha pedida, pero si falla
-                    # (xvfb timing, Angular model no actualizado) esto evita descargar todo.
-                    # La fecha de concertación suele estar en cells[2] (dd/mm/yyyy).
+                    # (xvfb timing, Angular model no actualizado) el servidor devuelve
+                    # toda la historia. Este filtro es la última línea de defensa:
+                    # si no podemos verificar la fecha (sin celdas, pocas celdas) → SKIP.
+                    # Nunca incluir links cuya fecha no podemos confirmar.
                     movimientos_filtrados = [
                         m for m in movimientos
-                        if not m["cells"]          # sin tabla: incluir (no podemos filtrar)
-                        or len(m["cells"]) < 3     # pocas celdas: incluir
-                        or m["cells"][2] == fecha_fmt   # fecha concertación correcta
-                        or m["cells"][1] == fecha_fmt   # o fecha liquidación (fallback)
+                        if len(m["cells"]) >= 3
+                        and (
+                            m["cells"][2] == fecha_fmt   # fecha concertación correcta
+                            or m["cells"][1] == fecha_fmt   # o fecha liquidación (fallback)
+                        )
                     ]
+                    if len(movimientos) > 0 and len(movimientos_filtrados) == 0:
+                        logger.warning(
+                            "[%s]   AVISO: %d links en DOM pero NINGUNO con fecha %s — "
+                            "posible fallo del filtro server-side (Angular model no actualizado). "
+                            "Verificar val_desde/val_hasta arriba.",
+                            self.nombre, len(movimientos), fecha_fmt,
+                        )
                     logger.info("[%s]   Movimientos: %d (de %d en DOM, filtro fecha=%s)",
                                 self.nombre, len(movimientos_filtrados),
                                 len(movimientos), fecha_fmt)
