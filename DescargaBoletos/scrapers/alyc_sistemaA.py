@@ -232,35 +232,35 @@ class PuenteScraper(BaseScraper):
                                         return {{
                                             href: a.getAttribute('href'),
                                             cells: cells,
+                                            rowText: row ? row.innerText : '',
                                         }};
                                     }});
                         }}
                     """)
 
-                    # Filtro client-side ESTRICTO por fecha de concertación.
-                    # El servidor debería devolver solo la fecha pedida, pero si falla
-                    # (xvfb timing, Angular model no actualizado) el servidor devuelve
-                    # toda la historia. Este filtro es la última línea de defensa:
-                    # si no podemos verificar la fecha (sin celdas, pocas celdas) → SKIP.
-                    # Nunca incluir links cuya fecha no podemos confirmar.
+                    # Filtro client-side ESTRICTO — tres condiciones:
+                    # 1. Fecha de CONCERTACIÓN == fecha pedida (sin fallback liquidación:
+                    #    el fallback incluía cauciones de día anterior en carpeta Pases).
+                    # 2. El texto de la fila debe contener el tipo de filtro actual
+                    #    (evita FCI/garantías que el portal mezcla con Pases).
+                    # 3. Si no podemos verificar la fecha (pocas celdas) → SKIP.
+                    filtro_lower = filtro_val.lower()
                     movimientos_filtrados = [
                         m for m in movimientos
                         if len(m["cells"]) >= 3
-                        and (
-                            m["cells"][2] == fecha_fmt   # fecha concertación correcta
-                            or m["cells"][1] == fecha_fmt   # o fecha liquidación (fallback)
-                        )
+                        and m["cells"][2] == fecha_fmt
+                        and filtro_lower in m["rowText"].lower()
                     ]
                     if len(movimientos) > 0 and len(movimientos_filtrados) == 0:
                         logger.warning(
-                            "[%s]   AVISO: %d links en DOM pero NINGUNO con fecha %s — "
+                            "[%s]   AVISO: %d links en DOM pero NINGUNO con fecha %s y tipo '%s' — "
                             "posible fallo del filtro server-side (Angular model no actualizado). "
                             "Verificar val_desde/val_hasta arriba.",
-                            self.nombre, len(movimientos), fecha_fmt,
+                            self.nombre, len(movimientos), fecha_fmt, filtro_val,
                         )
-                    logger.info("[%s]   Movimientos: %d (de %d en DOM, filtro fecha=%s)",
+                    logger.info("[%s]   Movimientos: %d (de %d en DOM, filtro fecha=%s tipo='%s')",
                                 self.nombre, len(movimientos_filtrados),
-                                len(movimientos), fecha_fmt)
+                                len(movimientos), fecha_fmt, filtro_val)
                     movimientos = movimientos_filtrados
 
                     # ── Descargar PDFs ──────────────────────────────────────
@@ -306,10 +306,13 @@ class PuenteScraper(BaseScraper):
                             # Ej: filename="13841 - Movimiento 20248.pdf"
                             cd = resp.headers.get("content-disposition", "")
                             nro_match = _RE_CD_NRO.search(cd)
-                            if nro_match:
+                            if nro_match and nro_match.group(1) != "0":
                                 nro_boleto = nro_match.group(1)
                                 dest_path  = dest_tipo_dir / f"{nro_boleto}.pdf"
                                 logger.info("[%s] Nro boleto desde Content-Disposition: %s", self.nombre, nro_boleto)
+                            elif nro_match and nro_match.group(1) == "0":
+                                logger.warning("[%s] Boleto con nro=0 en Content-Disposition ('%s') — operación no estándar, omitiendo", self.nombre, cd)
+                                continue
                             else:
                                 dest_path = provisional_path
                                 logger.warning("[%s] Sin nro boleto en Content-Disposition ('%s') — usando idMovimiento", self.nombre, cd)
