@@ -50,6 +50,7 @@ FOLDER_TO_JIRA: dict[str, str] = {
     "MetroCorp":  "Metrocorp",
     "Dhalmore":   "Dhalmore",
     "Puente":     "Puente",
+    "Cocos":      "Cocos",
 }
 JIRA_TO_FOLDER = {v: k for k, v in FOLDER_TO_JIRA.items()}
 
