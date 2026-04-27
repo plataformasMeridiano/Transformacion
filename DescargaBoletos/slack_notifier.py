@@ -129,6 +129,16 @@ def send_resumen_fecha(fecha: str, resultado: dict) -> bool:
     return _post({"text": texto})
 
 
+def send_alarm(texto: str) -> bool:
+    """Publica una alerta crítica en Slack (emoji 🚨)."""
+    return _post({"text": f"🚨 *ALERTA — Boletos*\n{texto}"})
+
+
+def send_info(texto: str) -> bool:
+    """Publica un mensaje informativo en Slack."""
+    return _post({"text": texto})
+
+
 if __name__ == "__main__":
     # Prueba standalone: envía tabla para una fecha usando jira_controller
     if len(sys.argv) < 2:

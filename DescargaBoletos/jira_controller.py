@@ -61,8 +61,11 @@ TIPO_JIRA_TO_LOCAL: dict[str, str] = {
     "Venta FCE-eCheq": "Venta FCE-eCheq",
 }
 
+CF_MAV = "customfield_11191"  # Código MAV de la FCE (ej: "INC100400020")
+
 ACCOUNT_DIRS = {"MeridianoNorte", "Pamat", "Clinicaltech"}
 DOWNLOADS_DIR = Path(__file__).parent / "downloads"
+COBROS_DIR    = Path(__file__).parent / "cobros"
 
 logging.basicConfig(
     level=logging.INFO,
@@ -230,6 +233,37 @@ def verify_fecha(fecha: str) -> dict:
         "local_boletos":    local,
         "jira_boletos":     dict(jira_index),
     }
+
+
+def verify_cobros_fecha(fecha: str) -> list[dict]:
+    """
+    Lee cobros/{fecha}.json y verifica que cada FCE figure como 'Cobrada' en Jira.
+    Retorna la lista de cobros cuyo issue en Jira NO tiene status 'Cobrada'.
+    """
+    cobros_file = COBROS_DIR / f"{fecha}.json"
+    if not cobros_file.exists():
+        return []
+
+    cobros: list[dict] = json.loads(cobros_file.read_text())
+    pendientes: list[dict] = []
+
+    for cobro in cobros:
+        fce = cobro["fce"]
+        issues = jira_search(
+            f'project={_JIRA_PROJECT} AND cf[11191] = "{fce}"',
+            ["status", CF_MAV],
+        )
+        if not issues:
+            logger.warning("  FCE %s no encontrada en Jira", fce)
+            pendientes.append({**cobro, "jira_status": "NO ENCONTRADA"})
+            continue
+
+        statuses = [iss["fields"]["status"]["name"] for iss in issues]
+        if not any(s == "Cobrada" for s in statuses):
+            logger.warning("  FCE %s — status en Jira: %s", fce, statuses)
+            pendientes.append({**cobro, "jira_status": statuses})
+
+    return pendientes
 
 
 def print_result(r: dict) -> None:
