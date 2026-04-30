@@ -287,6 +287,22 @@
           }
         ]
       }
+    },
+    {
+      "nombre": "IEB",
+      "sistema": "ieb",
+      "activo": true,
+      "url_login": "https://clientesv2.invertirenbolsa.com.ar/",
+      "documento": "${IEB_DOCUMENTO}",
+      "usuario": "${IEB_USUARIO}",
+      "contrasena": "${IEB_PASSWORD}",
+      "opciones": {
+        "comitente": "365533",
+        "tipo_operacion": [
+          "Venta FCE-eCheq"
+        ],
+        "timeout_ms": 30000
+      }
     }
   ]
 }

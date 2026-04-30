@@ -42,6 +42,7 @@ from scrapers.alyc_sistemaE import MaxCapitalScraper
 from scrapers.alyc_sistemaF import MetroCorpScraper
 from scrapers.alyc_sistemaG import DhalmoreScraper
 from scrapers.alyc_sistemaH import AllariaScraper
+from scrapers.alyc_ieb import IEBScraper
 
 SCRAPER_MAP = {
     "sistemaA": PuenteScraper,
@@ -52,6 +53,7 @@ SCRAPER_MAP = {
     "sistemaF": MetroCorpScraper,
     "sistemaG": DhalmoreScraper,
     "sistemaH": AllariaScraper,
+    "ieb":      IEBScraper,
 }
 
 SKIP_ALYCS: set[str] = set()
