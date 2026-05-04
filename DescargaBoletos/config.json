@@ -9,7 +9,8 @@
     "credentials_file": "credentials/gdrive_service_account.json",
     "root_folder_id": "${GDRIVE_ROOT_FOLDER_ID}",
     "tipo_folder_overrides": {
-      "Venta FCE-eCheq": "1NbLIYvULKie7qhhKfKCZ3JW4kJg6uBVY"
+      "Venta FCE-eCheq":       "1NbLIYvULKie7qhhKfKCZ3JW4kJg6uBVY",
+      "Cauciones Colocadoras": "17WiNDbl5lsJeC1DpgX3lr-FqrgMHNQTr"
     }
   },
   "alycs": [
@@ -25,7 +26,8 @@
         "headless": false,
         "tipo_operacion": [
           "Pases",
-          "Cauciones"
+          "Cauciones",
+          "Cauciones Colocadoras"
         ],
         "timeout_ms": 30000
       }
@@ -76,7 +78,7 @@
         ],
         "tipo_operacion": [
           "Venta FCE-eCheq",
-          "Cauciones"
+          "Cauciones Colocadoras"
         ],
         "timeout_ms": 30000
       }
@@ -200,6 +202,7 @@
         ],
         "tipo_operacion": [
           "Cauciones",
+          "Cauciones Colocadoras",
           "Pases"
         ],
         "timeout_ms": 30000
@@ -220,6 +223,7 @@
         ],
         "tipo_operacion": [
           "Cauciones",
+          "Cauciones Colocadoras",
           "Pases"
         ],
         "timeout_ms": 30000
@@ -242,7 +246,8 @@
           "GARANTIA CAUCION"
         ],
         "tipo_operacion": [
-          "Cauciones"
+          "Cauciones",
+          "Cauciones Colocadoras"
         ],
         "timeout_ms": 30000,
         "cuentas": [

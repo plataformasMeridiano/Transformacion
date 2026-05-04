@@ -95,27 +95,21 @@ class MetroCorpScraper(BaseScraper):
     def _classify(self, descripcion: str) -> str | None:
         """
         Clasifica un movimiento por su descripcionOperacion.
-        Retorna "Cauciones", "Pases", o None (ignorar).
+        Retorna "Cauciones", "Cauciones Colocadoras", "Pases", o None (ignorar).
 
         Lógica:
           1. Si la descripción coincide con alguna caucion_exclude_keyword → None
-          2. Si coincide con alguna caucion_keyword → "Cauciones"
-          3. De lo contrario → "Pases"
-
-        Motivo del exclude:
-          "GARANTIA CAUCION TITULOS" contiene "CAUCION" pero es depósito de garantía,
-          no una operación de caución. Se excluye explícitamente.
-
-        Motivo de "CAUCION" en lugar de "CAUC":
-          Las operaciones internas del banco usan "APER. CAUC TOMADORA" (abreviado),
-          que genera PDFs de "Movimientos" (extracto), no boletos reales.
-          Los boletos de exchange usan siempre "CAUCION" completo.
+          2. Si contiene "COLOCACION" → "Cauciones Colocadoras"
+          3. Si coincide con alguna caucion_keyword → "Cauciones" (tomadoras)
+          4. De lo contrario → "Pases"
         """
         desc_up = descripcion.upper()
         logger.debug("[%s] _classify: '%s'", self.nombre, descripcion)
         if any(kw in desc_up for kw in self._caucion_exclude):
             logger.debug("[%s] Excluido por exclude_keyword: '%s'", self.nombre, descripcion)
             return None
+        if "COLOCACION" in desc_up:
+            return "Cauciones Colocadoras"
         if any(kw in desc_up for kw in self._caucion_kw):
             return "Cauciones"
         return "Pases"
@@ -379,7 +373,7 @@ class MetroCorpScraper(BaseScraper):
                 continue
 
             # ── 4. Clasificar movimientos ─────────────────────────────────────
-            by_tipo: dict[str, list] = {"Cauciones": [], "Pases": []}
+            by_tipo: dict[str, list] = {"Cauciones": [], "Cauciones Colocadoras": [], "Pases": []}
             for m in movements:
                 desc = m.get("descripcionOperacion", "")
                 tipo = self._classify(desc)

@@ -18,8 +18,9 @@ _URL_MOVIMIENTOS = f"{_BASE_URL}/cuentas/mi-cuenta/movimientos"
 
 # Mapeo nombre config → valores del select #descripcionFiltro que le corresponden
 _TIPO_A_FILTROS: dict[str, list[str]] = {
-    "Cauciones": ["Caución Tomadora", "Caución Colocadora", "Cierre Caución"],
-    "Pases":     ["Pase Tomador",     "Pase Colocador"],
+    "Cauciones":             ["Caución Tomadora", "Cierre Caución"],
+    "Cauciones Colocadoras": ["Caución Colocadora"],
+    "Pases":                 ["Pase Tomador", "Pase Colocador"],
 }
 
 # Regex para extraer idMovimiento de href="/...?idCuenta=X&idMovimiento=Y"

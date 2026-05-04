@@ -52,8 +52,11 @@ class ConoSurScraper(BaseScraper):
         )
 
     def _classify_tipo(self, concepto: str) -> str:
-        """Clasifica un boleto como 'Cauciones' o 'Pases' según el concepto de la API."""
-        if concepto.strip().upper() in self._caucion_conceptos:
+        """Clasifica un boleto como 'Cauciones', 'Cauciones Colocadoras' o 'Pases'."""
+        upper = concepto.strip().upper()
+        if upper == "COLOCADORA":
+            return "Cauciones Colocadoras"
+        if upper in self._caucion_conceptos:
             return "Cauciones"
         return "Pases"
 
@@ -172,19 +175,22 @@ class ConoSurScraper(BaseScraper):
         )
 
         # ── 3. Seleccionar movimientos a descargar ─────────────────────────
-        # Cauciones: ambas patas tienen concertación == fecha
+        # Cauciones (tomadoras + colocadoras): ambas patas tienen concertación == fecha
         movs_cauciones = [
             m for m in all_movs
             if m.get("concertacion") == fecha_fmt
-            and self._classify_tipo(m.get("concepto", "")) == "Cauciones"
+            and self._classify_tipo(m.get("concepto", "")) in ("Cauciones", "Cauciones Colocadoras")
         ]
         # Pases: par Venta(T) + Compra(T+1_biz_day, mismo simboloLocal)
         movs_pases = self._match_pases(all_movs, fecha_fmt)
 
         movs: list[dict] = []
-        if "Cauciones" in tipos_config:
+        if "Cauciones" in tipos_config or "Cauciones Colocadoras" in tipos_config:
             movs.extend(movs_cauciones)
-            logger.info("[%s] Cauciones el %s: %d", self.nombre, fecha_fmt, len(movs_cauciones))
+            n_tom = sum(1 for m in movs_cauciones if self._classify_tipo(m.get("concepto","")) == "Cauciones")
+            n_col = len(movs_cauciones) - n_tom
+            logger.info("[%s] Cauciones el %s: %d tomadoras, %d colocadoras",
+                        self.nombre, fecha_fmt, n_tom, n_col)
         if "Pases" in tipos_config:
             movs.extend(movs_pases)
             logger.info("[%s] Pases el %s: %d (apertura+cierre)", self.nombre, fecha_fmt, len(movs_pases))

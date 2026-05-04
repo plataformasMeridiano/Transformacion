@@ -80,7 +80,7 @@ class AllariaScraper(AdcapScraper):
         """
         Allaria usa códigos distintos a ADCAP:
           VCHDIF / VCHDCON → Venta FCE-eCheq
-          APCOLCON / APCOLFUT (caucion_codes) → Cauciones
+          APCOLCON / APCOLFUT (caucion_codes) → Cauciones Colocadoras
           otros → Pases
         """
         code = cells[4].strip().upper() if len(cells) > 4 else ""
@@ -89,7 +89,7 @@ class AllariaScraper(AdcapScraper):
         if code in _PAGARE_CODES:
             return "Pagarés"
         if code in self._caucion_codes:
-            return "Cauciones"
+            return "Cauciones Colocadoras"
         return "Pases"
 
     # ── Login via Auth0 ───────────────────────────────────────────────────────
