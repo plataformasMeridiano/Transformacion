@@ -28,8 +28,13 @@ load_dotenv(Path(__file__).parent / ".env")
 _JIRA_EMAIL    = os.environ["JIRA_EMAIL"]
 _JIRA_TOKEN    = os.environ["JIRA_API_TOKEN"]
 _JIRA_CLOUD_ID = os.environ["JIRA_CLOUD_ID"]
-_JIRA_PROJECT  = os.environ.get("JIRA_PROJECT", "PAS")
+_JIRA_PROJECT  = os.environ.get("JIRA_PROJECT", "PAS")   # Pasivos: Cauciones + Pases
+_JIRA_PROJECT_ACT = "ACT"                                 # Activos: Venta FCE-eCheq
 _JIRA_BASE     = f"https://api.atlassian.com/ex/jira/{_JIRA_CLOUD_ID}/rest/api/3"
+
+# Tipos que van en cada proyecto Jira
+_TIPOS_PASIVOS = {"Cauciones", "Pases"}
+_TIPOS_ACTIVOS = {"Cauciones Colocadoras", "Venta FCE-eCheq"}
 
 # Custom fields
 CF_ALYC  = "customfield_11360"  # ALyC (ej: "ConoSur", "Puente")
@@ -122,9 +127,11 @@ def jira_search(jql: str, fields: list[str]) -> list[dict]:
 
 
 def get_jira_issues_for_fecha(fecha: str) -> list[dict]:
-    jql = f'project={_JIRA_PROJECT} AND cf[10455] = "{fecha}"'
+    """Retorna issues de ambos proyectos (PAS + ACT) para la fecha."""
     fields = [CF_ALYC, CF_FECHA, CF_NRO, CF_TIPO, "summary"]
-    return jira_search(jql, fields)
+    pasivos = jira_search(f'project={_JIRA_PROJECT} AND cf[10455] = "{fecha}"', fields)
+    activos = jira_search(f'project={_JIRA_PROJECT_ACT} AND cf[10455] = "{fecha}"', fields)
+    return pasivos + activos
 
 
 # ── Boletos locales ───────────────────────────────────────────────────────────
@@ -191,21 +198,29 @@ def verify_fecha(fecha: str) -> dict:
     """
     Compara boletos locales vs issues Jira para una fecha.
 
+    Pasivos (PAS): Cauciones, Cauciones Colocadoras, Pases
+    Activos (ACT): Venta FCE-eCheq
+
     Lógica de comparación:
     - Clave de match: (folder_local, tipo_local, nro_boleto)
-    - Para Cauciones: Jira crea 2 issues por boleto (concertacion + liquidacion).
-      Se deduplicamos por nro en Jira antes de comparar.
+    - Para Cauciones: Jira crea 2 issues por boleto (concertacion + liquidacion);
+      se deduplica por nro antes de comparar.
     - Reporta faltantes (local sin Jira) y huérfanos (Jira sin local).
     """
     logger.info("Verificando %s...", fecha)
 
-    local = collect_local_boletos(fecha)
+    local    = collect_local_boletos(fecha)
     jira_raw = get_jira_issues_for_fecha(fecha)
 
-    logger.info("  Local: %d boletos  |  Jira: %d issues", len(local), len(jira_raw))
+    local_pasivos = [b for b in local if b["tipo"] in _TIPOS_PASIVOS]
+    local_activos = [b for b in local if b["tipo"] in _TIPOS_ACTIVOS]
+
+    logger.info(
+        "  Local: %d boletos (%d pasivos / %d activos)  |  Jira: %d issues",
+        len(local), len(local_pasivos), len(local_activos), len(jira_raw),
+    )
 
     # Índice Jira: (folder, tipo_local, nro) → lista de issue keys
-    # Deduplicamos por nro (concertacion + liquidacion comparten número)
     jira_index: dict[tuple, set[str]] = defaultdict(set)
     for iss in jira_raw:
         f = iss["fields"]
@@ -217,21 +232,22 @@ def verify_fecha(fecha: str) -> dict:
         nro       = str(int(nro_raw)) if nro_raw is not None else ""
         jira_index[(folder, tipo, nro)].add(iss["key"])
 
-    # Índice local
     local_keys = {(b["folder"], b["tipo"], b["nro"]) for b in local}
 
     faltantes_en_jira = local_keys - set(jira_index.keys())
     solo_en_jira      = set(jira_index.keys()) - local_keys
 
     return {
-        "fecha":            fecha,
-        "local_count":      len(local),
-        "jira_issue_count": len(jira_raw),
-        "jira_boleto_count": len(jira_index),
-        "faltantes":        sorted(faltantes_en_jira),
-        "solo_jira":        {k: sorted(v) for k, v in jira_index.items() if k in solo_en_jira},
-        "local_boletos":    local,
-        "jira_boletos":     dict(jira_index),
+        "fecha":              fecha,
+        "local_count":        len(local),
+        "local_pasivos":      len(local_pasivos),
+        "local_activos":      len(local_activos),
+        "jira_issue_count":   len(jira_raw),
+        "jira_boleto_count":  len(jira_index),
+        "faltantes":          sorted(faltantes_en_jira),
+        "solo_jira":          {k: sorted(v) for k, v in jira_index.items() if k in solo_en_jira},
+        "local_boletos":      local,
+        "jira_boletos":       dict(jira_index),
     }
 
 

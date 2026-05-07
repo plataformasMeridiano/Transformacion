@@ -5,9 +5,10 @@ Reemplaza run_daily.sh. Fases:
   1. Descarga    — batch_download.py --delta (Cauciones + Pases + FCE)
   2. Cocos       — upload_cocos_drive.py --desde FECHA
   3. Cobros FCE  — run_allaria_cobros_fce.py (cobros de FCE en cuenta corriente Allaria)
-  4. Zapier      — run_boletos_zapier.py para los últimos días hábiles
-  5. Jira        — verifica que cada boleto local tenga issue; alerta en Slack si no
-  6. Resumen     — tabla por fecha en Slack
+  4. FCE Ventas  — webhook ujlo78k para cada (alyc, fecha) con boletos Venta FCE-eCheq
+  5. Zapier      — run_boletos_zapier.py para los últimos días hábiles
+  6. Jira        — verifica que cada boleto local tenga issue; alerta en Slack si no
+  7. Resumen     — tabla por fecha en Slack
 
 Uso (cron):
     0 12 * * 1-6 cd /ruta && xvfb-run --auto-servernum python3 daily_orchestrator.py >> logs/cron.log 2>&1
@@ -18,6 +19,7 @@ import logging
 import os
 import subprocess
 import sys
+import urllib.request
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -102,6 +104,64 @@ def phase_cobros_fce(desde: str, hasta: str) -> bool:
     )
     if exit_code != 0:
         send_alarm(f"*run_allaria_cobros_fce falló* (exit={exit_code}) rango {desde} → {hasta}")
+        return False
+    return True
+
+
+_FCE_VENTA_WEBHOOK = "https://hooks.zapier.com/hooks/catch/24963922/ujlo78k/"
+_FCE_ALYCS = {"Allaria", "ADCAP", "Dhalmore", "IEB"}
+
+
+def _fce_ventas_en_disco(desde: str, hasta: str) -> list[tuple[str, str]]:
+    """Devuelve lista de (alyc, fecha) que tienen PDFs en Venta FCE-eCheq en el rango."""
+    downloads = SCRIPT_DIR / "downloads"
+    desde_d = date.fromisoformat(desde)
+    hasta_d = date.fromisoformat(hasta)
+    resultado = []
+    for alyc_dir in sorted(downloads.iterdir()):
+        if not alyc_dir.is_dir() or alyc_dir.name not in _FCE_ALYCS:
+            continue
+        for fecha_dir in sorted(alyc_dir.iterdir()):
+            if not fecha_dir.is_dir():
+                continue
+            try:
+                d = date.fromisoformat(fecha_dir.name)
+            except ValueError:
+                continue
+            if not (desde_d <= d <= hasta_d):
+                continue
+            fce_dir = fecha_dir / "Venta FCE-eCheq"
+            if fce_dir.exists() and any(p.stat().st_size >= 100 for p in fce_dir.glob("*.pdf")):
+                resultado.append((alyc_dir.name, fecha_dir.name))
+    return resultado
+
+
+def phase_fce_ventas_zapier(desde: str, hasta: str) -> bool:
+    """Dispara webhook de Ventas FCE para cada (alyc, fecha) con boletos en disco."""
+    logger = logging.getLogger("orchestrator")
+    logger.info("─" * 55)
+    logger.info("[4/6 fce_ventas] Buscando boletos Venta FCE-eCheq en %s → %s", desde, hasta)
+
+    pares = _fce_ventas_en_disco(desde, hasta)
+    if not pares:
+        logger.info("[fce_ventas] Sin boletos FCE en el rango — nada que hacer")
+        return True
+
+    logger.info("[fce_ventas] %d combinaciones (alyc, fecha) a disparar", len(pares))
+    err = 0
+    for alyc, fecha in pares:
+        url = f"{_FCE_VENTA_WEBHOOK}?fecha={fecha}&alyc={alyc}"
+        try:
+            req = urllib.request.Request(url, method="POST", data=b"")
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                body = resp.read().decode()
+                logger.info("  Webhook OK  %s / %s — %s", alyc, fecha, body[:80])
+        except Exception as e:
+            logger.error("  Webhook ERR %s / %s — %s", alyc, fecha, e)
+            err += 1
+
+    if err:
+        send_alarm(f"*fce_ventas_zapier*: {err} webhook(s) fallaron en rango {desde} → {hasta}")
         return False
     return True
 
@@ -213,7 +273,11 @@ def main() -> int:
     if not phase_cobros_fce(desde, hasta):
         errores.append("cobros_fce")
 
-    # Phase 4 — Zapier
+    # Phase 4 — FCE Ventas Zapier
+    if not phase_fce_ventas_zapier(desde, hasta):
+        errores.append("fce_ventas_zapier")
+
+    # Phase 5 — Zapier
     if not phase_zapier(desde, hasta):
         errores.append("zapier")
 
