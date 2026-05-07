@@ -109,7 +109,7 @@ def phase_cobros_fce(desde: str, hasta: str) -> bool:
 
 
 _FCE_VENTA_WEBHOOK = "https://hooks.zapier.com/hooks/catch/24963922/ujlo78k/"
-_FCE_ALYCS = {"Allaria", "ADCAP", "Dhalmore", "IEB"}
+_FCE_ALYCS = {"Allaria", "ADCAP", "Dhalmore", "IEB", "DAValores"}
 
 
 def _fce_ventas_en_disco(desde: str, hasta: str) -> list[tuple[str, str]]:
