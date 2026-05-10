@@ -29,7 +29,7 @@ from dotenv import load_dotenv
 
 from drive_uploader import DriveUploader, nro_from_filename
 from supabase_logger import (
-    log_boleto,
+    log_boleto, update_boleto_drive,
     start_corrida, finish_corrida,
     start_alyc_detalle, finish_alyc_detalle,
     get_fechas_completadas,
@@ -197,13 +197,15 @@ async def process_alyc_batch(
                     for pdf_path in pdfs:
                         tipo = pdf_path.parent.name
                         nro  = nro_from_filename(pdf_path.name)
+                        boleto_id = log_boleto(fecha, nombre, tipo, nro, pdf_path.name)
                         try:
                             file_id = uploader.upload_boleto(
                                 pdf_path, tipo, fecha, nombre, nro, overwrite=True,
                             )
                             fs += 1
                             total_sub += 1
-                            log_boleto(fecha, nombre, tipo, nro, pdf_path.name, file_id)
+                            if boleto_id and file_id:
+                                update_boleto_drive(boleto_id, file_id)
                         except Exception as exc:
                             logger.error("[%s] Upload %s falló: %s", nombre, pdf_path.name, exc)
                             fe += 1

@@ -90,8 +90,12 @@ def log_boleto(
     nro_boleto: str,
     filename: str,
     drive_file_id: str | None = None,
-) -> bool:
-    """Inserta un registro en procesamiento_boletos."""
+) -> str | None:
+    """
+    Inserta un registro en procesamiento_boletos.
+    Retorna el UUID del registro insertado, o None si falló.
+    Llamar con drive_file_id=None tras descarga local; luego update_boleto_drive() tras subir.
+    """
     result = _post(_TABLE_BOLETOS, {
         "fecha_operacion": fecha_operacion,
         "alyc":            alyc,
@@ -100,8 +104,40 @@ def log_boleto(
         "filename":        filename,
         "drive_file_id":   drive_file_id,
         "fecha_descarga":  datetime.now(timezone.utc).isoformat(),
-    })
-    return result is not None
+    }, return_rep=True)
+    if result:
+        return result.get("id")
+    return None
+
+
+def update_boleto_drive(boleto_id: str, drive_file_id: str) -> bool:
+    """Actualiza drive_file_id de un registro ya insertado."""
+    return _patch(_TABLE_BOLETOS, boleto_id, {"drive_file_id": drive_file_id})
+
+
+def get_boletos_sin_drive() -> list[dict]:
+    """
+    Retorna registros de procesamiento_boletos con drive_file_id IS NULL.
+    Cada elemento tiene: id, fecha_operacion, alyc, tipo, nro_boleto, filename.
+    """
+    try:
+        url, key = _get_client()
+        req = urllib.request.Request(
+            f"{url}/rest/v1/{_TABLE_BOLETOS}"
+            "?drive_file_id=is.null"
+            "&select=id,fecha_operacion,alyc,tipo,nro_boleto,filename",
+            headers={
+                "apikey":        key,
+                "Authorization": f"Bearer {key}",
+                "Accept":        "application/json",
+                "Range":         "0-9999",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return json.loads(resp.read())
+    except Exception as exc:
+        logger.warning("get_boletos_sin_drive falló: %s", exc)
+        return []
 
 
 # ── corridas (maestro) ────────────────────────────────────────────────────────

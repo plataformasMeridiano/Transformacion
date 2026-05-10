@@ -16,9 +16,10 @@ _GQL_URL       = "https://home.max.capital/backend/api/graphql"
 _DOWNLOAD_BASE = "https://home.max.capital/backend/api/v1/files/receipts/pdf"
 _HOME_URL      = "https://home.max.capital/"
 
-# Códigos de operación que identifican cauciones en el campo "detail"
+# Códigos de operación en el campo "detail"
 # detail = "Boleto / 37087 / APTOMCONC / 0 / $"
-_DEFAULT_CAUCION_CODES = frozenset({"APTOMCONC", "APTOMFUTC"})
+_DEFAULT_CAUCION_CODES     = frozenset({"APTOMCONC", "APTOMFUTC"})  # tomadoras
+_DEFAULT_COLOCADORAS_CODES = frozenset({"APCOLCON",  "APCOLFUT"})   # colocadoras
 
 
 class MaxCapitalScraper(BaseScraper):
@@ -47,9 +48,11 @@ class MaxCapitalScraper(BaseScraper):
         cuentas        (list[dict])  Lista de cuentas: {"nombre": str, "numero": int}
                                      numero debe matchear el número visible en el radio button.
                                      Si está vacío o ausente: selecciona el primer radio (compat).
-        caucion_codes  (list[str])   Códigos en el campo "detail" que identifican cauciones.
-                                     Default: ["APTOMCONC", "APTOMFUTC"].
-        tipo_operacion (list[str])   Subtipos a descargar: "Cauciones", "Pases".
+        caucion_codes      (list[str])   Códigos en "detail" que identifican cauciones tomadoras.
+                                         Default: ["APTOMCONC", "APTOMFUTC"].
+        colocadoras_codes  (list[str])   Códigos en "detail" que identifican cauciones colocadoras.
+                                         Default: ["APCOLCON", "APCOLFUT"].
+        tipo_operacion     (list[str])   Subtipos a descargar: "Cauciones", "Cauciones Colocadoras", "Pases".
     """
 
     def __init__(self, alyc_config: dict, general_config: dict):
@@ -59,6 +62,12 @@ class MaxCapitalScraper(BaseScraper):
             frozenset(c.upper() for c in codes)
             if codes is not None
             else _DEFAULT_CAUCION_CODES
+        )
+        col_codes = self.opciones.get("colocadoras_codes")
+        self._colocadoras_codes = (
+            frozenset(c.upper() for c in col_codes)
+            if col_codes is not None
+            else _DEFAULT_COLOCADORAS_CODES
         )
         self._auth_token: str | None = None
         self._gql_movements: dict | None = None
@@ -74,7 +83,7 @@ class MaxCapitalScraper(BaseScraper):
         return self
 
     def _classify_tipo(self, detail: str) -> str:
-        """Clasifica un boleto como 'Cauciones' o 'Pases' según el código del detail.
+        """Clasifica un boleto como 'Cauciones', 'Cauciones Colocadoras' o 'Pases'.
 
         detail format: "Boleto / 37087 / APTOMCONC / 0 / $"
         """
@@ -82,6 +91,8 @@ class MaxCapitalScraper(BaseScraper):
         for part in parts:
             if part in self._caucion_codes:
                 return "Cauciones"
+            if part in self._colocadoras_codes:
+                return "Cauciones Colocadoras"
         return "Pases"
 
     def _setup_interceptors(self, page):

@@ -2,6 +2,7 @@
 daily_orchestrator.py — Orquestador del procesamiento diario de boletos.
 
 Reemplaza run_daily.sh. Fases:
+  0. Reconciliación — sube a Drive los PDFs en disco sin drive_file_id; dispara webhook FCE si fuera de ventana
   1. Descarga    — batch_download.py --delta (Cauciones + Pases + FCE)
   2. Cocos       — upload_cocos_drive.py --desde FECHA
   3. Cobros FCE  — run_allaria_cobros_fce.py (cobros de FCE en cuenta corriente Allaria)
@@ -27,6 +28,9 @@ from dotenv import load_dotenv
 
 load_dotenv(Path(__file__).parent / ".env")
 
+from batch_download import _resolve_env
+from drive_uploader import DriveUploader
+from supabase_logger import get_boletos_sin_drive, update_boleto_drive
 from jira_controller import verify_fecha, verify_cobros_fecha
 from jira_controller import business_days as _bdays
 from slack_notifier import send_resumen_fecha, send_alarm, send_info
@@ -74,6 +78,73 @@ def _run(cmd: list[str], phase: str) -> int:
 
 
 # ── Fases ─────────────────────────────────────────────────────────────────────
+
+def phase_reconcile(ventana_desde: str) -> bool:
+    """
+    Fase 0: sube a Drive los PDFs que están en disco pero sin drive_file_id en Supabase.
+    Para los de tipo Venta FCE-eCheq fuera de la ventana diaria, dispara el webhook de Jira.
+    """
+    logger = logging.getLogger("orchestrator")
+    logger.info("─" * 55)
+    logger.info("[0/reconcile] Buscando boletos sin subir a Drive")
+
+    cfg = json.loads((SCRIPT_DIR / "config.json").read_text())
+    gd = cfg["google_drive"]
+    uploader = DriveUploader(
+        gd["credentials_file"],
+        _resolve_env(gd["root_folder_id"]),
+        tipo_folder_overrides=gd.get("tipo_folder_overrides"),
+    )
+
+    pendientes = get_boletos_sin_drive()
+    if not pendientes:
+        logger.info("[reconcile] Sin pendientes")
+        return True
+
+    logger.info("[reconcile] %d boleto(s) con drive_file_id=NULL", len(pendientes))
+    downloads = SCRIPT_DIR / "downloads"
+    err = 0
+    fce_fuera_ventana: list[tuple[str, str]] = []
+    ventana_desde_d = date.fromisoformat(ventana_desde)
+
+    for b in pendientes:
+        pdf = downloads / b["alyc"] / b["fecha_operacion"] / b["tipo"] / b["filename"]
+        if not pdf.exists():
+            logger.warning("[reconcile] PDF no encontrado en disco: %s", pdf)
+            continue
+        try:
+            file_id = uploader.upload_boleto(
+                pdf, b["tipo"], b["fecha_operacion"], b["alyc"], b["nro_boleto"], overwrite=True,
+            )
+            update_boleto_drive(b["id"], file_id)
+            logger.info("[reconcile] Subido: %s/%s/%s", b["alyc"], b["fecha_operacion"], b["filename"])
+
+            if (b["tipo"] == "Venta FCE-eCheq"
+                    and date.fromisoformat(b["fecha_operacion"]) < ventana_desde_d):
+                par = (b["alyc"], b["fecha_operacion"])
+                if par not in fce_fuera_ventana:
+                    fce_fuera_ventana.append(par)
+        except Exception as exc:
+            logger.error("[reconcile] Upload falló %s/%s: %s", b["alyc"], b["filename"], exc)
+            err += 1
+
+    # Disparar webhook FCE para fechas fuera de ventana que ahora tienen Drive
+    for alyc, fecha in fce_fuera_ventana:
+        url = f"{_FCE_VENTA_WEBHOOK}?fecha={fecha}&alyc={alyc}"
+        try:
+            req = urllib.request.Request(url, method="POST", data=b"")
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                body = resp.read().decode()
+                logger.info("[reconcile] Webhook FCE %s/%s — %s", alyc, fecha, body[:60])
+        except Exception as exc:
+            logger.error("[reconcile] Webhook FCE falló %s/%s: %s", alyc, fecha, exc)
+            err += 1
+
+    if err:
+        send_alarm(f"*reconcile*: {err} error(s) subiendo PDFs pendientes a Drive")
+        return False
+    return True
+
 
 def phase_download() -> bool:
     """Descarga boletos en modo delta (todos los ALYCs, todas las operaciones)."""
@@ -253,6 +324,11 @@ def main() -> int:
     send_info(f"⏳ Iniciando procesamiento diario — {hoy}")
 
     errores: list[str] = []
+
+    # Phase 0 — Reconciliación Drive (PDFs en disco sin subir)
+    desde_reconcile = (date.today() - timedelta(days=30)).isoformat()
+    if not phase_reconcile(ventana_desde=desde_reconcile):
+        errores.append("reconcile")
 
     # Phase 1 — Download
     if not phase_download():

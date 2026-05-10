@@ -10,8 +10,9 @@ logger = logging.getLogger(__name__)
 _TIMEOUT = 30_000
 
 # Códigos de tipo de operación por portal (columna de la grilla)
-# Pueden sobreescribirse con opciones["caucion_codes"] en config.json
-_DEFAULT_CAUCION_CODES = frozenset({"APTOMCONC", "APTOMFUTC"})  # ADCAP
+# Pueden sobreescribirse con opciones["caucion_codes"] / opciones["colocadoras_codes"] en config.json
+_DEFAULT_CAUCION_CODES     = frozenset({"APTOMCONC", "APTOMFUTC"})  # tomadoras ADCAP
+_DEFAULT_COLOCADORAS_CODES = frozenset({"APCOLCON",  "APCOLFUT"})   # colocadoras (igual en VBhome)
 
 
 class AdcapScraper(BaseScraper):
@@ -37,37 +38,47 @@ class AdcapScraper(BaseScraper):
         6. Guardar en dest_dir/{cuenta.nombre}/{tipo}/ si hay múltiples cuentas
 
     Configuración relevante en opciones:
-        cuentas        (list[dict])  Lista de cuentas: {"nombre": str, "label": str}
-                                     label debe coincidir con el texto del md-option.
-                                     Si está vacío o ausente: usa la cuenta por defecto.
-        caucion_codes  (list[str])   Códigos que identifican cauciones en la grilla.
-                                     Default: ["APTOMCONC", "APTOMFUTC"] (ADCAP).
-                                     Ejemplo BACS: ["VENTACNG", "COMPRACNG"].
-        fce_codes      (list[str])   Códigos que identifican ventas FCE-eCheq.
-                                     Ejemplo ADCAP: ["VCHDIF"].
-        tipo_operacion (list[str])   Subtipos a descargar: "Cauciones", "Pases",
-                                     "Venta FCE-eCheq".
+        cuentas            (list[dict])  Lista de cuentas: {"nombre": str, "label": str}
+                                         label debe coincidir con el texto del md-option.
+                                         Si está vacío o ausente: usa la cuenta por defecto.
+        caucion_codes      (list[str])   Códigos que identifican cauciones tomadoras.
+                                         Default: ["APTOMCONC", "APTOMFUTC"] (ADCAP).
+                                         Ejemplo BACS: ["VENTACNG", "COMPRACNG"].
+        colocadoras_codes  (list[str])   Códigos que identifican cauciones colocadoras.
+                                         Default: ["APCOLCON", "APCOLFUT"] (igual en VBhome).
+        fce_codes          (list[str])   Códigos que identifican ventas FCE-eCheq.
+                                         Ejemplo ADCAP: ["VCHDIF"].
+        tipo_operacion     (list[str])   Subtipos a descargar: "Cauciones", "Pases",
+                                         "Cauciones Colocadoras", "Venta FCE-eCheq".
     """
 
     def __init__(self, alyc_config: dict, general_config: dict):
         super().__init__(alyc_config, general_config)
-        codes = self.opciones.get("caucion_codes")
+        caucion_codes = self.opciones.get("caucion_codes")
         self._caucion_codes = (
-            frozenset(c.upper() for c in codes)
-            if codes is not None
+            frozenset(c.upper() for c in caucion_codes)
+            if caucion_codes is not None
             else _DEFAULT_CAUCION_CODES
+        )
+        colocadoras_codes = self.opciones.get("colocadoras_codes")
+        self._colocadoras_codes = (
+            frozenset(c.upper() for c in colocadoras_codes)
+            if colocadoras_codes is not None
+            else _DEFAULT_COLOCADORAS_CODES
         )
         fce_codes = self.opciones.get("fce_codes", [])
         self._fce_codes = frozenset(c.upper() for c in fce_codes)
 
     def _classify_tipo(self, cells: list[str]) -> str:
-        """Clasifica un boleto como 'Cauciones', 'Pases' o 'Venta FCE-eCheq'."""
+        """Clasifica un boleto como 'Cauciones', 'Cauciones Colocadoras', 'Pases' o 'Venta FCE-eCheq'."""
         for cell in cells:
             code = cell.strip().upper()
             if code in self._fce_codes:
                 return "Venta FCE-eCheq"
             if code in self._caucion_codes:
                 return "Cauciones"
+            if code in self._colocadoras_codes:
+                return "Cauciones Colocadoras"
         return "Pases"
 
     async def login(self) -> bool:
