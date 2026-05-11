@@ -58,13 +58,13 @@ class IEBScraper(BaseScraper):
         timeout = self.opciones.get("timeout_ms", _TIMEOUT)
 
         logger.info("[%s] Navegando a %s", self.nombre, self.url_login)
-        await page.goto(self.url_login, wait_until="networkidle", timeout=timeout)
+        await page.goto(self.url_login, wait_until="load", timeout=timeout)
 
         await page.fill('input[name="Dni"]',      self._documento)
         await page.fill('input[name="Usuario"]',  self.usuario)
         await page.fill('input[name="Password"]', self.contrasena)
         await page.click('input[type="submit"]')
-        await page.wait_for_load_state("networkidle", timeout=timeout)
+        await page.wait_for_load_state("load", timeout=timeout)
 
         if "Consultas" in page.url or "Portafolio" in page.url:
             logger.info("[%s] Login exitoso — URL: %s", self.nombre, page.url)
@@ -84,13 +84,14 @@ class IEBScraper(BaseScraper):
         if "Venta FCE-eCheq" not in tipos_config:
             return []
 
-        fecha_dt  = datetime.strptime(fecha, "%Y-%m-%d")
-        fecha_fmt = fecha_dt.strftime("%d/%m/%Y")
+        fecha_dt   = datetime.strptime(fecha, "%Y-%m-%d")
+        fecha_fmt  = fecha_dt.strftime("%d/%m/%Y")
+        fecha_fec1 = fecha_dt.strftime("%d/%m/%y")   # FEC1 usa año de 2 dígitos
 
         # Establecer contexto de sesión
         await self._page.goto(
             f"{_BASE}/Consultas/CuentaCorrientePesos",
-            wait_until="networkidle", timeout=timeout,
+            wait_until="load", timeout=timeout,
         )
 
         logger.info("[%s] Consultando CC para %s", self.nombre, fecha)
@@ -115,10 +116,14 @@ class IEBScraper(BaseScraper):
         movimientos = cc_resp.get("Result", {}).get("Detalle", [])
         logger.info("[%s] Movimientos el %s: %d", self.nombre, fecha, len(movimientos))
 
+        # FEC1 es la fecha de operación real (formato "DD/MM/YY").
+        # El API devuelve FCEs acumuladas (aún no cobradas) para cualquier rango —
+        # hay que filtrar por FEC1 para obtener solo las operadas en el día pedido.
         fce_movs = [
             m for m in movimientos
             if m.get("CPTE") == "VCMV"
             and "FACTURA ELECTRONICA" in (m.get("ESPE") or "").upper()
+            and m.get("FEC1") == fecha_fec1
         ]
 
         if not fce_movs:
