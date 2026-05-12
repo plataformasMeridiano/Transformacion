@@ -126,7 +126,21 @@
           "Cauciones",
           "Cauciones Colocadoras"
         ],
-        "timeout_ms": 30000
+        "timeout_ms": 30000,
+        "cuentas": [
+          {
+            "nombre": "MeridianoNorte",
+            "label": "MERIDIANO NORTE SA"
+          },
+          {
+            "nombre": "Pamat",
+            "label": "PAMAT S.A."
+          },
+          {
+            "nombre": "Mancia",
+            "label": "MANCIA SA"
+          }
+        ]
       }
     },
     {
