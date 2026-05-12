@@ -287,6 +287,8 @@ class DhalmoreScraper(BaseScraper):
             cnombre = cuenta.get("nombre", "")
 
             for tipo_op in tipos_config:
+                if tipo_op == "Venta FCE-eCheq":
+                    continue  # se descarga por separado con _fetch_fce_movements
                 tipo_api = _TIPO_API.get(tipo_op)
                 if not tipo_api:
                     logger.warning("[%s] Tipo desconocido: %s", self.nombre, tipo_op)
