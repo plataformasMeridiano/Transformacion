@@ -188,7 +188,7 @@ class DhalmoreScraper(BaseScraper):
         }
         logger.debug("[%s] GET historical-movements %s %s %s→%s",
                      self.nombre, customer_account_id, tipo_api, from_date, to_date)
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with httpx.AsyncClient(timeout=90) as client:
             r = await client.get(url, headers=self._build_headers(), params=params)
         if r.status_code != 200:
             logger.warning("[%s] historical-movements → %d: %s",
@@ -215,7 +215,7 @@ class DhalmoreScraper(BaseScraper):
             "fromDate": f"{fecha}T00:00:00.000Z",
             "toDate":   f"{fecha}T00:00:00.000Z",
         }
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with httpx.AsyncClient(timeout=90) as client:
             r = await client.get(url, headers=self._build_headers(), params=params)
         if r.status_code != 200:
             logger.warning("[%s] historical-instrument-equities → %d: %s",
@@ -245,7 +245,7 @@ class DhalmoreScraper(BaseScraper):
             f"/ticket/{document_key}"
         )
         params = {"orderCode": order_code, "receiptCode": receipt_code}
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with httpx.AsyncClient(timeout=90) as client:
             r = await client.get(url, headers=self._build_headers(), params=params)
         if r.status_code != 200:
             logger.warning("[%s] ticket/%s → %d", self.nombre, document_key, r.status_code)
@@ -336,7 +336,12 @@ class DhalmoreScraper(BaseScraper):
 
                     logger.info("[%s] Descargando %s (%s %s)…",
                                 self.nombre, order_code, description, currency_mov)
-                    pdf_bytes = await self._download_pdf(cid, doc_key, order_code, receipt_code)
+                    try:
+                        pdf_bytes = await self._download_pdf(cid, doc_key, order_code, receipt_code)
+                    except Exception as exc:
+                        logger.error("[%s] Timeout/error descargando %s: %s",
+                                     self.nombre, order_code, exc)
+                        continue
                     if pdf_bytes:
                         fname.write_bytes(pdf_bytes)
                         logger.info("[%s] Guardado: %s (%d KB)",
@@ -380,7 +385,12 @@ class DhalmoreScraper(BaseScraper):
 
                 logger.info("[%s] Descargando FCE %s (%s)…",
                             self.nombre, order_code, mov.get("description", "").strip())
-                pdf_bytes = await self._download_pdf(cid, doc_key, order_code, receipt_code)
+                try:
+                    pdf_bytes = await self._download_pdf(cid, doc_key, order_code, receipt_code)
+                except Exception as exc:
+                    logger.error("[%s] Timeout/error descargando FCE %s: %s",
+                                 self.nombre, order_code, exc)
+                    continue
                 if pdf_bytes:
                     fname.write_bytes(pdf_bytes)
                     logger.info("[%s] Guardado FCE: %s (%d KB)",
