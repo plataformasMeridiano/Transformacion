@@ -75,12 +75,22 @@ def send_resumen_fecha(fecha: str, resultado: dict) -> bool:
     col_alyc = 12
     col_num  = 5
 
-    header  = f"{'ALYC':<{col_alyc}}  {'── Cauciones ──':^{col_num*2+3}}  {'──── Pases ────':^{col_num*2+3}}"
-    subhead = f"{'':^{col_alyc}}  {'PDF':>{col_num}} {'Jira':>{col_num}}    {'PDF':>{col_num}} {'Jira':>{col_num}}"
+    header  = (
+        f"{'ALYC':<{col_alyc}}  {'── Cauciones ──':^{col_num*2+3}}"
+        f"  {'──── Pases ────':^{col_num*2+3}}"
+        f"  {'─── Vta. FCE ───':^{col_num*2+3}}"
+    )
+    subhead = (
+        f"{'':^{col_alyc}}  {'PDF':>{col_num}} {'Jira':>{col_num}}"
+        f"    {'PDF':>{col_num}} {'Jira':>{col_num}}"
+        f"    {'PDF':>{col_num}} {'Jira':>{col_num}}"
+    )
     sep     = "─" * len(header)
 
     rows = []
-    total_cau_pdf = total_cau_jira = total_pas_pdf = total_pas_jira = 0
+    total_cau_pdf = total_cau_jira = 0
+    total_pas_pdf = total_pas_jira = 0
+    total_fce_pdf = total_fce_jira = 0
     total_faltantes = 0
 
     for folder in alycs_activos:
@@ -88,6 +98,8 @@ def send_resumen_fecha(fecha: str, resultado: dict) -> bool:
         cau_jira = jira_counts.get((folder, "Cauciones"), 0)
         pas_pdf  = local_counts.get((folder, "Pases"), 0)
         pas_jira = jira_counts.get((folder, "Pases"), 0)
+        fce_pdf  = local_counts.get((folder, "Venta FCE-eCheq"), 0)
+        fce_jira = jira_counts.get((folder, "Venta FCE-eCheq"), 0)
 
         faltantes_folder = sum(
             1 for (f, t, _) in resultado.get("faltantes", [])
@@ -103,18 +115,20 @@ def send_resumen_fecha(fecha: str, resultado: dict) -> bool:
             return f"{pdf:>{col_num}} {jira:>{col_num}}"
 
         rows.append(
-            f"{folder:<{col_alyc}}  {fmt(cau_pdf, cau_jira)}    {fmt(pas_pdf, pas_jira)}{warn}"
+            f"{folder:<{col_alyc}}  {fmt(cau_pdf, cau_jira)}"
+            f"    {fmt(pas_pdf, pas_jira)}"
+            f"    {fmt(fce_pdf, fce_jira)}{warn}"
         )
 
-        total_cau_pdf  += cau_pdf
-        total_cau_jira += cau_jira
-        total_pas_pdf  += pas_pdf
-        total_pas_jira += pas_jira
+        total_cau_pdf  += cau_pdf;  total_cau_jira += cau_jira
+        total_pas_pdf  += pas_pdf;  total_pas_jira += pas_jira
+        total_fce_pdf  += fce_pdf;  total_fce_jira += fce_jira
 
     total_row = (
         f"{'TOTAL':<{col_alyc}}  "
         f"{total_cau_pdf:>{col_num}} {total_cau_jira:>{col_num}}    "
-        f"{total_pas_pdf:>{col_num}} {total_pas_jira:>{col_num}}"
+        f"{total_pas_pdf:>{col_num}} {total_pas_jira:>{col_num}}    "
+        f"{total_fce_pdf:>{col_num}} {total_fce_jira:>{col_num}}"
     )
 
     tabla = "\n".join([header, subhead, sep] + rows + [sep, total_row])
