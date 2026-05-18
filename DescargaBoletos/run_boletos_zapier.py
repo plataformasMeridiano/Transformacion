@@ -167,8 +167,12 @@ def supabase_get(url: str, key: str, fecha: str) -> list[dict]:
 
 
 def is_done(records: list[dict]) -> bool:
-    """Retorna True si existen registros con status 'Fin Cauciones' y 'Fin Pases'."""
+    """Retorna True si Zapier completó el procesamiento de la fecha."""
     statuses = {r.get("status") for r in records}
+    # Formato nuevo: alyc=None, status="Fin Proceso"
+    if "Fin Proceso" in statuses:
+        return True
+    # Formato legado: "Fin Cauciones" y "Fin Pases" por ALYC
     return "Fin Cauciones" in statuses and "Fin Pases" in statuses
 
 # ── Zapier ─────────────────────────────────────────────────────────────────────
