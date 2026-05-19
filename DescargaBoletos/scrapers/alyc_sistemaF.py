@@ -201,7 +201,7 @@ class MetroCorpScraper(BaseScraper):
         await page.wait_for_function(
             "() => window.location.pathname.includes('desktop')"
             " || !!document.querySelector('#document\\\\.number')",
-            timeout=45_000,
+            timeout=90_000,
         )
 
         # Si hay sesión activa el sitio redirecciona a /desktop
@@ -223,7 +223,7 @@ class MetroCorpScraper(BaseScraper):
         await page.click("button[type='submit']:has-text('Ingresar')")
 
         await page.wait_for_url(lambda u: "desktop" in u, timeout=timeout)
-        await page.wait_for_timeout(2000)
+        await page.wait_for_timeout(5000)
 
         logger.info("[%s] Login exitoso — URL: %s", self.nombre, page.url)
         return True
@@ -245,24 +245,25 @@ class MetroCorpScraper(BaseScraper):
         logger.info("[%s] Abriendo environments-dropdown", self.nombre)
         env_btn = page.locator("li.environments-dropdown button").first
 
-        # Verificar rápidamente si el botón está disponible
+        # Esperar hasta 25s a que el SPA renderice el header
         try:
-            await env_btn.wait_for(state="visible", timeout=8_000)
+            await env_btn.wait_for(state="visible", timeout=25_000)
         except Exception:
             # Sesión degradada: navegar a /desktop para refrescar el header
             logger.warning(
                 "[%s] Dropdown no disponible — navegando a /desktop para refrescar", self.nombre
             )
             await page.goto(_URL_DESKTOP, wait_until="networkidle", timeout=timeout)
-            await page.wait_for_timeout(2000)
+            await page.wait_for_timeout(3000)
             env_btn = page.locator("li.environments-dropdown button").first
             try:
-                await env_btn.wait_for(state="visible", timeout=10_000)
+                await env_btn.wait_for(state="visible", timeout=20_000)
             except Exception:
                 # Último recurso: re-login completo
                 logger.warning("[%s] Dropdown aún no disponible — re-login completo", self.nombre)
                 await self.login()
                 env_btn = page.locator("li.environments-dropdown button").first
+                await env_btn.wait_for(state="visible", timeout=25_000)
 
         await env_btn.click(timeout=timeout)
         await page.wait_for_timeout(800)
