@@ -161,6 +161,17 @@ class AllariaScraper(AdcapScraper):
 
         # ── Si quedamos en allaria.com.ar, invocar getHomeEsco() para ir a VBolsaNet ──
         if "AllariaOnline" not in post_login_url and "VBolsaNet" not in post_login_url:
+            # Aceptar modal de T&C si está presente
+            terms_checkbox = page.locator("input[type='checkbox']").first
+            try:
+                await terms_checkbox.wait_for(state="visible", timeout=5_000)
+                logger.info("[%s] Modal T&C detectado — aceptando", self.nombre)
+                await terms_checkbox.check()
+                await page.locator("button:has-text('Continuar')").click()
+                await page.wait_for_timeout(2000)
+            except Exception:
+                pass  # no había modal
+
             logger.info("[%s] Invocando getHomeEsco() para ir a VBolsaNet...", self.nombre)
             # getHomeEsco() puede abrir una nueva pestaña o navegar en la misma
             async with self._persistent_context.expect_page(timeout=timeout) as new_page_info:

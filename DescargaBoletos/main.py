@@ -17,6 +17,7 @@ from datetime import date, timedelta
 from pathlib import Path
 
 from dotenv import load_dotenv
+from secrets_loader import load_secrets
 
 from drive_uploader import DriveUploader, nro_from_filename
 from supabase_logger import (
@@ -169,6 +170,7 @@ async def process_alyc(
 # ── Main ──────────────────────────────────────────────────────────────────────
 async def main() -> int:
     # Cargar .env desde el mismo directorio que este script
+    load_secrets()
     load_dotenv(Path(__file__).parent / ".env")
 
     with open(Path(__file__).parent / "config.json") as f:

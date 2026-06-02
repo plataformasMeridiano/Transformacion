@@ -281,6 +281,7 @@ class AdcapScraper(BaseScraper):
             rows = sorted(rows, key=lambda r: (0 if self._classify_tipo(r["cells"]) == "Cauciones" else 1))
 
             # ── 4. Descargar PDFs ─────────────────────────────────────────────
+            prev_failed = False
             for row in rows:
                 tipo = self._classify_tipo(row["cells"])
                 if tipo not in tipos_config:
@@ -293,6 +294,16 @@ class AdcapScraper(BaseScraper):
                 data_id = row["dataId"]
                 logger.info("[%s] Descargando — data-id=%s  tipo=%s [%s]",
                             self.nombre, data_id, tipo, cta_nombre or "default")
+
+                # FCE-eCheq PDFs se generan on-demand: usar timeout mayor
+                dl_timeout = 90_000 if tipo == "Venta FCE-eCheq" else timeout
+
+                # Tras una fila fallida, recargar BOLETOS para restablecer el DOM
+                if prev_failed:
+                    await self._navegar_boletos(timeout)
+                    await self._aplicar_filtro_fecha(fecha)
+                    await asyncio.sleep(2)
+                    prev_failed = False
 
                 try:
                     # Scrollear el row al viewport — el portal renderiza el ícono PDF
@@ -317,7 +328,7 @@ class AdcapScraper(BaseScraper):
                     ).first
                     await dl_locator.wait_for(state="visible", timeout=10_000)
 
-                    async with page.expect_download(timeout=timeout) as dl_info:
+                    async with page.expect_download(timeout=dl_timeout) as dl_info:
                         await dl_locator.click()
                     dl = await dl_info.value
 
@@ -330,6 +341,7 @@ class AdcapScraper(BaseScraper):
                 except Exception as exc:
                     logger.error("[%s] Error en fila %s — %s: %s",
                                  self.nombre, data_id, type(exc).__name__, exc)
+                    prev_failed = True
                 finally:
                     # Cerrar el dialog antes de la próxima fila, pase lo que pase
                     await page.keyboard.press("Escape")

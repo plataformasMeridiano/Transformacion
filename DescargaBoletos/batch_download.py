@@ -26,6 +26,7 @@ from datetime import date, timedelta
 from pathlib import Path
 
 from dotenv import load_dotenv
+from secrets_loader import load_secrets
 
 from drive_uploader import DriveUploader, nro_from_filename
 from supabase_logger import (
@@ -260,6 +261,10 @@ def _parse_args() -> argparse.Namespace:
         help="Con --delta: procesar el gap completo (todas las fechas sin corrida ok en Supabase)",
     )
     parser.add_argument(
+        "--alyc", dest="alycs", action="append", metavar="NOMBRE",
+        help="Procesar solo esta ALYC (repetible: --alyc ADCAP --alyc Criteria)",
+    )
+    parser.add_argument(
         "rango", nargs="*",
         metavar="FECHA",
         help="Una fecha (YYYY-MM-DD) o rango inicio fin",
@@ -268,6 +273,7 @@ def _parse_args() -> argparse.Namespace:
 
 
 async def main() -> int:
+    load_secrets()
     load_dotenv(Path(__file__).parent / ".env")
 
     with open(Path(__file__).parent / "config.json") as f:
@@ -284,12 +290,13 @@ async def main() -> int:
         tipo_folder_overrides=gd.get("tipo_folder_overrides"),
     )
 
+    args = _parse_args()
+
     alycs = [
         a for a in config["alycs"]
         if a.get("activo") and a["nombre"] not in SKIP_ALYCS
+        and (not args.alycs or a["nombre"] in args.alycs)
     ]
-
-    args = _parse_args()
 
     # Logging preliminar (stdout) hasta que tengamos el tag para configurar el archivo
     logging.basicConfig(

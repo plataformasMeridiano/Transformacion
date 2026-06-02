@@ -325,6 +325,10 @@ class MetroCorpScraper(BaseScraper):
 
             # ── 1. Cambiar ambiente si corresponde ────────────────────────────
             if display_name:
+                # Navegar a /desktop antes de cada switch para re-inicializar el SPA.
+                # Sin esto, el dropdown de ambientes se degrada después de ~3 min.
+                await page.goto(_URL_DESKTOP, wait_until="networkidle", timeout=timeout)
+                await page.wait_for_timeout(2000)
                 logger.info("[%s] Cambiando a ambiente '%s'",
                             self.nombre, display_name)
                 await self._switch_environment(display_name, timeout)
