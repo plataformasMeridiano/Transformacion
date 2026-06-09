@@ -171,9 +171,9 @@
       "usuario": "${BACS_USUARIO}",
       "contrasena": "${BACS_PASSWORD}",
       "opciones": {
-        "caucion_codes": [],
         "tipo_operacion": [
-          "Pases"
+          "Pases",
+          "Cauciones"
         ],
         "timeout_ms": 30000
       }

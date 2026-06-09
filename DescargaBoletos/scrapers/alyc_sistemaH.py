@@ -187,8 +187,21 @@ class AllariaScraper(AdcapScraper):
             await page.wait_for_timeout(5000)
             logger.info("[%s] VBolsaNet URL: %s", self.nombre, page.url)
 
+        await self._dismiss_popups()
         logger.info("[%s] Login exitoso — URL: %s", self.nombre, page.url)
         return True
+
+    async def _dismiss_popups(self) -> None:
+        """Cierra modales de anuncio que aparecen post-login (ej: 'Reapertura Fondo Allaria Lendar')."""
+        page = self._page
+        try:
+            btn = page.locator("button:has-text('Cerrar')")
+            await btn.wait_for(state="visible", timeout=4_000)
+            await btn.click()
+            logger.info("[%s] Popup de anuncio cerrado", self.nombre)
+            await page.wait_for_timeout(500)
+        except Exception:
+            pass  # no había popup
 
     # ── TOTP (2FA) ───────────────────────────────────────────────────────────
 
@@ -233,6 +246,7 @@ class AllariaScraper(AdcapScraper):
         Override: Allaria no permite goto(desktop.html#!/boletos) — redirige a
         #!/tenenciaval. Usamos changeCurrentView('/boletos') via scope Angular.
         """
+        await self._dismiss_popups()
         page = self._page
         result = await page.evaluate("""
             () => {
