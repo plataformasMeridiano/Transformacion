@@ -27,7 +27,8 @@
         "tipo_operacion": [
           "Pases",
           "Cauciones",
-          "Cauciones Colocadoras"
+          "Cauciones Colocadoras",
+          "Venta FCE-eCheq"
         ],
         "timeout_ms": 30000
       }
@@ -267,10 +268,12 @@
         "caucion_exclude_keywords": [
           "GARANTIA CAUCION"
         ],
+        "fce_keywords": [],
         "tipo_operacion": [
           "Cauciones",
           "Cauciones Colocadoras",
-          "Pases"
+          "Pases",
+          "Venta FCE-eCheq"
         ],
         "timeout_ms": 30000,
         "cuentas": [

@@ -21,6 +21,7 @@ _TIPO_A_FILTROS: dict[str, list[str]] = {
     "Cauciones":             ["Caución Tomadora", "Cierre Caución"],
     "Cauciones Colocadoras": ["Caución Colocadora"],
     "Pases":                 ["Pase Tomador", "Pase Colocador"],
+    "Venta FCE-eCheq":       ["Venta"],
 }
 
 # Regex para extraer idMovimiento de href="/...?idCuenta=X&idMovimiento=Y"

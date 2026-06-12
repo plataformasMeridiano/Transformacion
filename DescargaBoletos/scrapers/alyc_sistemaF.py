@@ -22,6 +22,11 @@ _DEFAULT_CAUCION_KEYWORDS = frozenset({"CAUC", "COLOCACION"})
 #                              no un boleto de caución del mercado.
 _DEFAULT_CAUCION_EXCLUDE = frozenset({"GARANTIA CAUCION", "APER. CAUC"})
 
+# Palabras clave en descripcionOperacion que clasifican como Venta FCE-eCheq.
+# Vacío por defecto: configurar via fce_keywords en config.json una vez conocidas
+# las descripciones reales del portal (ej: ["FCE", "ECHEQ"]).
+_DEFAULT_FCE_KEYWORDS: frozenset[str] = frozenset()
+
 
 class MetroCorpScraper(BaseScraper):
     """
@@ -87,6 +92,12 @@ class MetroCorpScraper(BaseScraper):
             if excludes is not None
             else _DEFAULT_CAUCION_EXCLUDE
         )
+        fce_kw = self.opciones.get("fce_keywords")
+        self._fce_kw = (
+            frozenset(k.upper() for k in fce_kw)
+            if fce_kw is not None
+            else _DEFAULT_FCE_KEYWORDS
+        )
         self._bearer: str = ""
         self._dni = self._resolve(alyc_config.get("documento", ""))
 
@@ -95,19 +106,22 @@ class MetroCorpScraper(BaseScraper):
     def _classify(self, descripcion: str) -> str | None:
         """
         Clasifica un movimiento por su descripcionOperacion.
-        Retorna "Cauciones", "Cauciones Colocadoras", "Pases", o None (ignorar).
+        Retorna "Cauciones", "Cauciones Colocadoras", "Venta FCE-eCheq", "Pases", o None.
 
         Lógica:
           1. Si la descripción coincide con alguna caucion_exclude_keyword → None
-          2. Si contiene "COLOCACION" → "Cauciones Colocadoras"
-          3. Si coincide con alguna caucion_keyword → "Cauciones" (tomadoras)
-          4. De lo contrario → "Pases"
+          2. Si coincide con alguna fce_keyword → "Venta FCE-eCheq"
+          3. Si contiene "COLOCACION" → "Cauciones Colocadoras"
+          4. Si coincide con alguna caucion_keyword → "Cauciones" (tomadoras)
+          5. De lo contrario → "Pases"
         """
         desc_up = descripcion.upper()
         logger.debug("[%s] _classify: '%s'", self.nombre, descripcion)
         if any(kw in desc_up for kw in self._caucion_exclude):
             logger.debug("[%s] Excluido por exclude_keyword: '%s'", self.nombre, descripcion)
             return None
+        if self._fce_kw and any(kw in desc_up for kw in self._fce_kw):
+            return "Venta FCE-eCheq"
         if "COLOCACION" in desc_up:
             return "Cauciones Colocadoras"
         if any(kw in desc_up for kw in self._caucion_kw):
@@ -378,7 +392,7 @@ class MetroCorpScraper(BaseScraper):
                 continue
 
             # ── 4. Clasificar movimientos ─────────────────────────────────────
-            by_tipo: dict[str, list] = {"Cauciones": [], "Cauciones Colocadoras": [], "Pases": []}
+            by_tipo: dict[str, list] = {"Cauciones": [], "Cauciones Colocadoras": [], "Venta FCE-eCheq": [], "Pases": []}
             for m in movements:
                 desc = m.get("descripcionOperacion", "")
                 tipo = self._classify(desc)
