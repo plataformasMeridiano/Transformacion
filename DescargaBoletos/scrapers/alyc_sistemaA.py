@@ -252,6 +252,7 @@ class PuenteScraper(BaseScraper):
                         if len(m["cells"]) >= 3
                         and m["cells"][2] == fecha_fmt
                         and filtro_lower in m["rowText"].lower()
+                        and (tipo != "Venta FCE-eCheq" or "%" in m["rowText"])
                     ]
                     if len(movimientos) > 0 and len(movimientos_filtrados) == 0:
                         logger.warning(
