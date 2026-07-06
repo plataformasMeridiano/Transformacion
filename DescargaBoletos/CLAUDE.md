@@ -27,6 +27,8 @@ Descargar comprobantes PDF (boletos) de **cauciones y pases** de múltiples ALYC
 | MaxCapital | sistemaE | `alyc_sistemaE.py` | headless=false; cuentas MN (20759) y Pamat (20774) |
 | MetroCorp | sistemaF | `alyc_sistemaF.py` | Solo Cauciones |
 | Dhalmore | sistemaG | `alyc_sistemaG.py` | headless=false; cuentas MN (56553) y Pamat (56555) |
+| Allaria | sistemaH | `alyc_sistemaH.py` | Hereda AdcapScraper; Auth0/SSO + TOTP; persistent context; colocadoras + FCE |
+| IEB | ieb | `alyc_ieb.py` | Portal propio ASP.NET MVC; comitente 365533; solo MeridianoNorte |
 
 ## Cuentas comitentes
 
@@ -46,7 +48,7 @@ downloads/
             └── {id}.pdf
 ```
 
-## Estado del proyecto (al 2026-03-20)
+## Estado del proyecto (al 2026-07-06)
 
 - Todos los scrapers implementados y funcionando en producción
 
@@ -55,6 +57,10 @@ downloads/
 - **Puente — nombres de archivo corregidos:** los boletos se guardaban con el `idMovimiento` de la URL (ej: `16437291.pdf`) en lugar del número de boleto real. Se corrigió leyendo el header `Content-Disposition` del response de descarga (ej: `filename="13841 - Movimiento 9304.pdf"` → se guarda como `9304.pdf`). Se re-descargaron y re-subieron las 38 fechas afectadas (15-ene a 12-mar-2026) con `run_puente_fix_nombres.py`, y se eliminaron los ~158 archivos viejos de Drive con `cleanup_puente_nombres_drive.py`.
 
 - **DA Valores (sistemaB):** agregado 2026-03-20. Mismo portal VBhome/Unisync que ADCAP. Solo cuenta MeridianoNorte. Backfill completo: 66 boletos en 19 fechas (2026-02-23 → 2026-03-19). Zapier procesado para todas esas fechas con `run_da_zapier.py` (19/19 OK, `status=Fin Cauciones`).
+
+- **IEB (scraper propio):** agregado 2026-07-06. Portal ASP.NET MVC en `clientesv2.invertirenbolsa.com.ar`. Descarga desde `CuentaCorrientePesos` (proceso=02), clasificación por CPTE: `TCC` = apertura tomadora (aparece en fecha de operación), `TOCT` = cierre/término tomadora (aparece en fecha de liquidación T+1). Descarga via `GetComprobante {clave: CLAV}` → base64 PDF. Solo comitente MeridianoNorte (365533). Backfill mayo-junio 2026: 15 boletos en 9 fechas (primera operación: 2026-06-17). Mayo sin operaciones. `pase_codes` y `colocadoras_codes` aún por descubrir.
+
+- **Títulos — soporte multi-scraper:** agregado 2026-07-06. Todos los scrapers (sistemaA–G) soportan tipo "Títulos". Configuración por ALYC: `titulos_codes` (sistemaB/E), `titulos_conceptos` (sistemaD), `titulos_keywords` (sistemaF). En sistemaA, "Venta" de Títulos excluye filas con "%" (esas son FCE-eCheq). En sistemaG (Dhalmore), tipo API pendiente de identificar. En sistemaE (MaxCapital), se corrigió extracción de nro boleto para formato MAE (`Boleto MAE #XXXXX`).
 
 - **Cocos Capital — carga manual de pases:** Cocos no tiene scraper; los boletos se reciben como zip con estructura `BOLETOS PASES/YYYYMMDD/INSTRUMENTO-TipoOp-ID.pdf`. El número de boleto real se extrae del texto del PDF (campo "Número" en el encabezado: línea con comitente + fecha operación + fecha liquidación + número). Script: `upload_cocos_pases.py`. Carga inicial: 230 PDFs desde 2026-01-02, subidos a `Pases / YYYY-MM-DD / Boleto - Cocos - {nro}.pdf`.
 
