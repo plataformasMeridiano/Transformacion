@@ -22,6 +22,7 @@ _TIPO_A_FILTROS: dict[str, list[str]] = {
     "Cauciones Colocadoras": ["Caución Colocadora"],
     "Pases":                 ["Pase Tomador", "Pase Colocador"],
     "Venta FCE-eCheq":       ["Venta"],
+    "Títulos":               ["Compra", "Venta"],
 }
 
 # Regex para extraer idMovimiento de href="/...?idCuenta=X&idMovimiento=Y"
@@ -253,6 +254,8 @@ class PuenteScraper(BaseScraper):
                         and m["cells"][2] == fecha_fmt
                         and filtro_lower in m["rowText"].lower()
                         and (tipo != "Venta FCE-eCheq" or "%" in m["rowText"])
+                        # Títulos/Venta excluye filas con "%" (esas son FCE-eCheq)
+                        and not (tipo == "Títulos" and filtro_val == "Venta" and "%" in m["rowText"])
                     ]
                     if len(movimientos) > 0 and len(movimientos_filtrados) == 0:
                         logger.warning(

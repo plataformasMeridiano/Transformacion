@@ -18,6 +18,7 @@ _URL_COMPROBANTE   = f"{_BASE_URL}/Consultas/GetComprobante"
 # Mapeo nombre config → valor del <select> #idInputTipoCombo1
 _TIPO_A_COMBO = {
     "Compra/Venta": "00",
+    "Títulos":      "00",
     "Opciones":     "01",
     "Pases":        "02",
     "Cauciones":    "03",

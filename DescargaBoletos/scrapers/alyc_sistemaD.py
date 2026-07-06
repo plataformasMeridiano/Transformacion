@@ -50,14 +50,18 @@ class ConoSurScraper(BaseScraper):
             if conceptos is not None
             else _DEFAULT_CAUCION_CONCEPTOS
         )
+        titulos_conceptos = self.opciones.get("titulos_conceptos", [])
+        self._titulos_conceptos = frozenset(c.upper() for c in titulos_conceptos)
 
     def _classify_tipo(self, concepto: str) -> str:
-        """Clasifica un boleto como 'Cauciones', 'Cauciones Colocadoras' o 'Pases'."""
+        """Clasifica un boleto como 'Cauciones', 'Cauciones Colocadoras', 'Títulos' o 'Pases'."""
         upper = concepto.strip().upper()
         if upper == "COLOCADORA":
             return "Cauciones Colocadoras"
         if upper in self._caucion_conceptos:
             return "Cauciones"
+        if self._titulos_conceptos and upper in self._titulos_conceptos:
+            return "Títulos"
         return "Pases"
 
     def _match_pases(self, all_movs: list[dict], fecha_fmt: str) -> list[dict]:
@@ -184,28 +188,44 @@ class ConoSurScraper(BaseScraper):
         # Pases: par Venta(T) + Compra(T+1_biz_day, mismo simboloLocal)
         movs_pases = self._match_pases(all_movs, fecha_fmt)
 
-        movs: list[dict] = []
+        # Acumulador: (movimiento, tipo_predeterminado)
+        # El tipo se fija al construir la lista para evitar que pases con
+        # concepto="Compra"/"Venta" sean reclasificados como "Títulos"
+        # cuando titulos_conceptos incluye esos mismos valores.
+        movs_typed: list[tuple[dict, str]] = []
         if "Cauciones" in tipos_config or "Cauciones Colocadoras" in tipos_config:
-            movs.extend(movs_cauciones)
-            n_tom = sum(1 for m in movs_cauciones if self._classify_tipo(m.get("concepto","")) == "Cauciones")
-            n_col = len(movs_cauciones) - n_tom
+            for m in movs_cauciones:
+                movs_typed.append((m, self._classify_tipo(m.get("concepto", ""))))
+            n_tom = sum(1 for _, t in movs_typed if t == "Cauciones")
+            n_col = sum(1 for _, t in movs_typed if t == "Cauciones Colocadoras")
             logger.info("[%s] Cauciones el %s: %d tomadoras, %d colocadoras",
                         self.nombre, fecha_fmt, n_tom, n_col)
         if "Pases" in tipos_config:
-            movs.extend(movs_pases)
+            for m in movs_pases:
+                movs_typed.append((m, "Pases"))
             logger.info("[%s] Pases el %s: %d (apertura+cierre)", self.nombre, fecha_fmt, len(movs_pases))
+        if "Títulos" in tipos_config and self._titulos_conceptos:
+            pase_nros = {m.get("numeroComprobante", "") for m in movs_pases}
+            movs_titulos = [
+                m for m in all_movs
+                if m.get("concertacion") == fecha_fmt
+                and m.get("concepto", "").upper() in self._titulos_conceptos
+                and m.get("numeroComprobante", "") not in pase_nros
+            ]
+            for m in movs_titulos:
+                movs_typed.append((m, "Títulos"))
+            logger.info("[%s] Títulos el %s: %d", self.nombre, fecha_fmt, len(movs_titulos))
 
-        if not movs:
+        if not movs_typed:
             logger.info("[%s] Sin boletos para %s", self.nombre, fecha)
             return []
 
         # ── 4. Descargar PDFs ─────────────────────────────────────────────
         downloaded: list[Path] = []
 
-        for m in movs:
+        for m, tipo in movs_typed:
             nro = m.get("numeroComprobante", "")
             concepto = m.get("concepto", "")
-            tipo = self._classify_tipo(concepto)
 
             if tipo not in tipos_config:
                 continue

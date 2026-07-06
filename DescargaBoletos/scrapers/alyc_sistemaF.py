@@ -98,6 +98,12 @@ class MetroCorpScraper(BaseScraper):
             if fce_kw is not None
             else _DEFAULT_FCE_KEYWORDS
         )
+        titulos_kw = self.opciones.get("titulos_keywords")
+        self._titulos_kw = (
+            frozenset(k.upper() for k in titulos_kw)
+            if titulos_kw is not None
+            else frozenset()
+        )
         self._bearer: str = ""
         self._dni = self._resolve(alyc_config.get("documento", ""))
 
@@ -126,6 +132,8 @@ class MetroCorpScraper(BaseScraper):
             return "Cauciones Colocadoras"
         if any(kw in desc_up for kw in self._caucion_kw):
             return "Cauciones"
+        if self._titulos_kw and any(kw in desc_up for kw in self._titulos_kw):
+            return "Títulos"
         return "Pases"
 
     @staticmethod
@@ -392,7 +400,7 @@ class MetroCorpScraper(BaseScraper):
                 continue
 
             # ── 4. Clasificar movimientos ─────────────────────────────────────
-            by_tipo: dict[str, list] = {"Cauciones": [], "Cauciones Colocadoras": [], "Venta FCE-eCheq": [], "Pases": []}
+            by_tipo: dict[str, list] = {"Cauciones": [], "Cauciones Colocadoras": [], "Venta FCE-eCheq": [], "Títulos": [], "Pases": []}
             for m in movements:
                 desc = m.get("descripcionOperacion", "")
                 tipo = self._classify(desc)

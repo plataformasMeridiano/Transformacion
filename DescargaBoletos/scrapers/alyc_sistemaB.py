@@ -68,9 +68,11 @@ class AdcapScraper(BaseScraper):
         )
         fce_codes = self.opciones.get("fce_codes", [])
         self._fce_codes = frozenset(c.upper() for c in fce_codes)
+        titulos_codes = self.opciones.get("titulos_codes", [])
+        self._titulos_codes = frozenset(c.upper() for c in titulos_codes)
 
     def _classify_tipo(self, cells: list[str]) -> str:
-        """Clasifica un boleto como 'Cauciones', 'Cauciones Colocadoras', 'Pases' o 'Venta FCE-eCheq'."""
+        """Clasifica un boleto como 'Cauciones', 'Cauciones Colocadoras', 'Títulos', 'Pases' o 'Venta FCE-eCheq'."""
         for cell in cells:
             code = cell.strip().upper()
             if code in self._fce_codes:
@@ -79,6 +81,8 @@ class AdcapScraper(BaseScraper):
                 return "Cauciones"
             if code in self._colocadoras_codes:
                 return "Cauciones Colocadoras"
+            if self._titulos_codes and code in self._titulos_codes:
+                return "Títulos"
         return "Pases"
 
     async def login(self) -> bool:

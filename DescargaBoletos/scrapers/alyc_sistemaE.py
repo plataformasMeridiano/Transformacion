@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import re
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote
@@ -69,6 +70,8 @@ class MaxCapitalScraper(BaseScraper):
             if col_codes is not None
             else _DEFAULT_COLOCADORAS_CODES
         )
+        titulos_codes = self.opciones.get("titulos_codes", [])
+        self._titulos_codes = frozenset(c.upper() for c in titulos_codes)
         self._auth_token: str | None = None
         self._gql_movements: dict | None = None
 
@@ -83,7 +86,7 @@ class MaxCapitalScraper(BaseScraper):
         return self
 
     def _classify_tipo(self, detail: str) -> str:
-        """Clasifica un boleto como 'Cauciones', 'Cauciones Colocadoras' o 'Pases'.
+        """Clasifica un boleto como 'Cauciones', 'Cauciones Colocadoras', 'Títulos' o 'Pases'.
 
         detail format: "Boleto / 37087 / APTOMCONC / 0 / $"
         """
@@ -93,6 +96,8 @@ class MaxCapitalScraper(BaseScraper):
                 return "Cauciones"
             if part in self._colocadoras_codes:
                 return "Cauciones Colocadoras"
+            if self._titulos_codes and part in self._titulos_codes:
+                return "Títulos"
         return "Pases"
 
     def _setup_interceptors(self, page):
@@ -278,9 +283,17 @@ class MaxCapitalScraper(BaseScraper):
                 dest_tipo_dir = dest_base / tipo
                 dest_tipo_dir.mkdir(parents=True, exist_ok=True)
 
-                # Extraer número de boleto del detail ("Boleto / 37087 / ...")
+                # Extraer número de boleto del detail.
+                # Formato caucion:  "Boleto / 37087 / APTOMCONC / ..."  → parts[1] = nro
+                # Formato MAE:      "Boleto MAE #76022 / CPA / ..."     → nro en parts[0] tras "#"
                 parts = [p.strip() for p in detail.split("/")]
-                nro   = parts[1] if len(parts) > 1 else str(m["id"])
+                mae_match = re.search(r"#(\d+)", parts[0]) if parts else None
+                if mae_match:
+                    nro = mae_match.group(1)
+                elif len(parts) > 1 and parts[1].isdigit():
+                    nro = parts[1]
+                else:
+                    nro = str(m["id"])
 
                 dl_url = f"{_DOWNLOAD_BASE}?downloadId={quote(did, safe='')}"
                 logger.info("[%s] Descargando %s → tipo=%s [%s]",
