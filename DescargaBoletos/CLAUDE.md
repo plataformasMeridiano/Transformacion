@@ -22,11 +22,11 @@ Descargar comprobantes PDF (boletos) de **cauciones y pases** de múltiples ALYC
 | Criteria | sistemaB | `alyc_sistemaB.py` | |
 | BACS | sistemaB | `alyc_sistemaB.py` | Solo Pases |
 | DA Valores | sistemaB | `alyc_sistemaB.py` | Solo MeridianoNorte; URL: `https://clientes.davalores.com.ar/VBHome/login.html#!/login`; creds: `${DA_VALORES_USUARIO}` / `${DA_VALORES_PASSWORD}` |
-| WIN | sistemaC | `alyc_sistemaC.py` | Múltiples cuentas: MeridianoNorte (50015), Pamat (50017) |
+| WIN | sistemaG | `alyc_sistemaG.py` | **Migró a plataforma Fermi (Auth0)** el 2026-07 — comparte scraper con Dhalmore. Cuentas: MeridianoNorte (64346/50015), Mancia (64347/50016), Pamat (64348/50017). Login por email. `alyc_sistemaC.py` (portal ASP.NET viejo) quedó obsoleto. |
 | ConoSur | sistemaD | `alyc_sistemaD.py` | Dos instancias: cuenta 3003 (MN) y 3087 (Pamat) |
 | MaxCapital | sistemaE | `alyc_sistemaE.py` | headless=false; cuentas MN (20759) y Pamat (20774) |
 | MetroCorp | sistemaF | `alyc_sistemaF.py` | Solo Cauciones |
-| Dhalmore | sistemaG | `alyc_sistemaG.py` | headless=false; cuentas MN (56553) y Pamat (56555) |
+| Dhalmore | sistemaG | `alyc_sistemaG.py` | headless=false; cuentas MN (56553) y Pamat (56555). sistemaG es config-driven (api_base/url_base/profile_dir/device_id por opciones) — reusado por WIN |
 | Allaria | sistemaH | `alyc_sistemaH.py` | Hereda AdcapScraper; Auth0/SSO + TOTP; persistent context; colocadoras + FCE |
 | IEB | ieb | `alyc_ieb.py` | Portal propio ASP.NET MVC; comitente 365533; solo MeridianoNorte; cauciones por **concertación** vía OperacionesDia (proceso=05) + CLAV de proceso=02 |
 
@@ -67,6 +67,8 @@ downloads/
   - **Backfill junio 2026 rehecho:** se mandaron a papelera los 15 boletos viejos mal fechados y se re-descargaron **20 boletos** correctos por concertación (17–30/jun). Incluye cierres de plazo largo antes perdidos (ej. caución 23/06 con cierre `807620` que liquida 23/07). `pase_codes`/`colocadoras_codes` aún por descubrir; Títulos IEB soportado pero **inactivo** (falta agregar `"Títulos"` a `tipo_operacion` + `titulos_codes`).
 
 - **Títulos — soporte multi-scraper:** agregado 2026-07-06. Todos los scrapers (sistemaA–G) soportan tipo "Títulos". Configuración por ALYC: `titulos_codes` (sistemaB/E), `titulos_conceptos` (sistemaD), `titulos_keywords` (sistemaF). En sistemaA, "Venta" de Títulos excluye filas con "%" (esas son FCE-eCheq). En sistemaG (Dhalmore), tipo API pendiente de identificar. En sistemaE (MaxCapital), se corrigió extracción de nro boleto para formato MAE (`Boleto MAE #XXXXX`).
+
+- **WIN — migración a plataforma Fermi (2026-07-14, commit `623ee17`):** WIN abandonó su portal ASP.NET (`clientes.winsa.com.ar`, sistemaC) y migró a la plataforma Fermi/Auth0 (`login.winsa.com.ar`, API `core.winsa.prod.fermi.galloestudio.com`) — la misma que Dhalmore. El scraper viejo dejó de autenticar el 04-jun (login rebotaba en silencio, `login()` reportaba éxito falso) → 0 cauciones ~6 semanas. Se **generalizó sistemaG** (config-driven vía `api_base`/`url_base`/`profile_dir`/`device_id`) y WIN pasó a `sistemaG` con 3 cuentas (MN 64346, Mancia 64347, Pamat 64348), login por email, `tipo_operacion=Cauciones`. Vault actualizado (`WIN-USUARIO`=djoy@…, `WIN-PASSWORD`) vía `update-secret`. Backfill 04-jun→14-jul: **104 boletos** subidos a Drive (`run_win_backfill.py`, one-off). **Pendiente:** primer login en la VM pide device-verification MFA (código a `/tmp/win_code.txt`) para dejar el perfil persistente; y sync Zapier de esas fechas para reflejar en Jira.
 
 - **Cocos Capital — carga manual de pases:** Cocos no tiene scraper; los boletos se reciben como zip con estructura `BOLETOS PASES/YYYYMMDD/INSTRUMENTO-TipoOp-ID.pdf`. El número de boleto real se extrae del texto del PDF (campo "Número" en el encabezado: línea con comitente + fecha operación + fecha liquidación + número). Script: `upload_cocos_pases.py`. Carga inicial: 230 PDFs desde 2026-01-02, subidos a `Pases / YYYY-MM-DD / Boleto - Cocos - {nro}.pdf`.
 
