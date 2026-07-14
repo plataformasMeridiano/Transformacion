@@ -28,7 +28,7 @@ Descargar comprobantes PDF (boletos) de **cauciones y pases** de múltiples ALYC
 | MetroCorp | sistemaF | `alyc_sistemaF.py` | Solo Cauciones |
 | Dhalmore | sistemaG | `alyc_sistemaG.py` | headless=false; cuentas MN (56553) y Pamat (56555) |
 | Allaria | sistemaH | `alyc_sistemaH.py` | Hereda AdcapScraper; Auth0/SSO + TOTP; persistent context; colocadoras + FCE |
-| IEB | ieb | `alyc_ieb.py` | Portal propio ASP.NET MVC; comitente 365533; solo MeridianoNorte |
+| IEB | ieb | `alyc_ieb.py` | Portal propio ASP.NET MVC; comitente 365533; solo MeridianoNorte; cauciones por **concertación** vía OperacionesDia (proceso=05) + CLAV de proceso=02 |
 
 ## Cuentas comitentes
 
@@ -58,7 +58,13 @@ downloads/
 
 - **DA Valores (sistemaB):** agregado 2026-03-20. Mismo portal VBhome/Unisync que ADCAP. Solo cuenta MeridianoNorte. Backfill completo: 66 boletos en 19 fechas (2026-02-23 → 2026-03-19). Zapier procesado para todas esas fechas con `run_da_zapier.py` (19/19 OK, `status=Fin Cauciones`).
 
-- **IEB (scraper propio):** agregado 2026-07-06. Portal ASP.NET MVC en `clientesv2.invertirenbolsa.com.ar`. Descarga desde `CuentaCorrientePesos` (proceso=02), clasificación por CPTE: `TCC` = apertura tomadora (aparece en fecha de operación), `TOCT` = cierre/término tomadora (aparece en fecha de liquidación T+1). Descarga via `GetComprobante {clave: CLAV}` → base64 PDF. Solo comitente MeridianoNorte (365533). Backfill mayo-junio 2026: 15 boletos en 9 fechas (primera operación: 2026-06-17). Mayo sin operaciones. `pase_codes` y `colocadoras_codes` aún por descubrir.
+- **IEB (scraper propio):** agregado 2026-07-06. Portal ASP.NET MVC en `clientesv2.invertirenbolsa.com.ar`. Solo comitente MeridianoNorte (365533). Descarga via `GetComprobante {clave: CLAV}` → base64 PDF.
+
+- **IEB — descarga por fecha de CONCERTACIÓN (rediseño 2026-07-14, commit `2d32cfb`):** el enfoque original archivaba las cauciones filtrando `CuentaCorrientePesos` (proceso=02) por `FEC1`, que para la pata de cierre (`TOCT`) es la **fecha de liquidación** → el cierre quedaba bajo su vencimiento y no bajo la concertación, y se perdían cierres de plazo largo. Nuevo flujo en dos pasos:
+  1. **Identificar** con **OperacionesDia** = `GetConsulta proceso=05`, `fechaDesde=<día>` (por concertación). Devuelve `Result.Operaciones[]` agrupado por especie; cada uno con `Detalle[]` de patas `{CPTE, ESPE, Comprobante, NUME, CLAVE, ...}`. Lista **apertura + cierre(s) de cada caución juntos el día de la concertación** (el portal publica el boleto del cierre con fecha futura), y también títulos y FCE-eCheq.
+  2. **Descargar** con la `CLAV` de **proceso=02** (la `CLAVE` de proceso=05 **no** sirve para `GetComprobante` — devuelve HTML). Se arma un mapa `NUME→CLAV` con proceso=02 y **ventana forward de 120 días** (`_CLAV_WINDOW_DAYS`) para alcanzar la fecha de liquidación de cauciones a plazo largo; el ledger ya trae el boleto futuro con su CLAV.
+  Todo se archiva bajo la **fecha de concertación** sin tocar `batch_download.py`. Clasificación por CPTE: `TCC`/`TOCT`=Cauciones, `VCMV`+Nombre "FACTURA ELECTRONICA"=Venta FCE-eCheq, `VRCN`/`CRCN`/`VTIN`=Títulos (vía `titulos_codes`, configurable). `RFCW`/`SFCI`=FCI (se ignoran). `caucion_codes` default `["TCC","TOCT"]`; `colocadoras_codes`/`pase_codes`/`titulos_codes` vacíos por defecto.
+  - **Backfill junio 2026 rehecho:** se mandaron a papelera los 15 boletos viejos mal fechados y se re-descargaron **20 boletos** correctos por concertación (17–30/jun). Incluye cierres de plazo largo antes perdidos (ej. caución 23/06 con cierre `807620` que liquida 23/07). `pase_codes`/`colocadoras_codes` aún por descubrir; Títulos IEB soportado pero **inactivo** (falta agregar `"Títulos"` a `tipo_operacion` + `titulos_codes`).
 
 - **Títulos — soporte multi-scraper:** agregado 2026-07-06. Todos los scrapers (sistemaA–G) soportan tipo "Títulos". Configuración por ALYC: `titulos_codes` (sistemaB/E), `titulos_conceptos` (sistemaD), `titulos_keywords` (sistemaF). En sistemaA, "Venta" de Títulos excluye filas con "%" (esas son FCE-eCheq). En sistemaG (Dhalmore), tipo API pendiente de identificar. En sistemaE (MaxCapital), se corrigió extracción de nro boleto para formato MAE (`Boleto MAE #XXXXX`).
 
