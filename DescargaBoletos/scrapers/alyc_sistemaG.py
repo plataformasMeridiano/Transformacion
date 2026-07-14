@@ -12,6 +12,9 @@ from .base_scraper import BaseScraper
 logger = logging.getLogger(__name__)
 
 _TIMEOUT      = 60_000
+
+# Defaults de plataforma Fermi (= Dhalmore). Otras ALYCs sobre Fermi (ej. WIN)
+# sobreescriben api_base/url_base/profile_dir/device_id vía opciones en config.
 _API_BASE     = "https://core.dhalmore.prod.fermi.galloestudio.com/api"
 _URL_BASE     = "https://clientes.dhalmorecap.com/"
 _PROFILE_DIR  = Path("browser_profiles/dhalmore")
@@ -26,23 +29,19 @@ _TIPO_API = {
 # Operaciones que no son boletos de trading (se filtran de la descarga)
 _OP_SKIP = frozenset({"DRIG"})
 
-# Headers fijos que espera la API
-_EXTRA_HEADERS = {
-    "x-device-id":                 _DEVICE_ID,
-    "x-use-wrapped-single-values": "true",
-    "x-client-name":               "WEB 0.38.2",
-    "Origin":                      "https://clientes.dhalmorecap.com",
-    "Referer":                     "https://clientes.dhalmorecap.com/",
-}
-
 
 class DhalmoreScraper(BaseScraper):
     """
-    Scraper para Dhalmore Capital (plataforma Fermi de Gallo Estudio).
+    Scraper para plataforma Fermi de Gallo Estudio (Dhalmore Capital, WIN Securities).
+
+    El mismo backend Fermi (`core.<alyc>.prod.fermi.galloestudio.com`) sirve a
+    varias ALYCs; este scraper es config-driven vía opciones para reusarse entre
+    ellas (defaults = Dhalmore).
 
     Flujo:
-      1. Login con perfil persistente (browser_profiles/dhalmore/) — evita MFA
-         después del primer uso. Si pide MFA escribe el código en /tmp/dhalmore_code.txt.
+      1. Login con perfil persistente (browser_profiles/<alyc>/) — evita MFA
+         después del primer uso. Si pide MFA escribe el código en
+         /tmp/<alyc>_code.txt (Auth0 device verification).
       2. Captura bearer token via interceptor de requests outgoing.
       3. Descarga lista de movimientos via httpx (no page.evaluate) con el bearer.
       4. Descarga cada boleto PDF.
@@ -50,22 +49,31 @@ class DhalmoreScraper(BaseScraper):
     Config relevante en opciones:
       cuentas        list[dict]  {"nombre": str, "customer_account_id": int}
       tipo_operacion list[str]   "Cauciones" y/o "Pases"
-      device_id      str         Override del device ID (default: hardcoded)
+      api_base       str         Base de la API Fermi (default: Dhalmore)
+      url_base       str         URL del portal (default: Dhalmore)
+      profile_dir    str         Perfil persistente Chrome (default: browser_profiles/dhalmore)
+      device_id      str         Device ID verificado (default: hardcoded Dhalmore)
+      client_name    str         Header x-client-name (default: "WEB 0.38.2")
     """
 
     def __init__(self, alyc_config: dict, general_config: dict):
         super().__init__(alyc_config, general_config)
         self._bearer: str | None = None
         self._context = None   # persistent context (no _browser)
-        self._device_id = self.opciones.get("device_id", _DEVICE_ID)
+        # Parámetros de plataforma Fermi (config-driven; defaults = Dhalmore)
+        self._api_base    = self.opciones.get("api_base", _API_BASE)
+        self._url_base    = self.opciones.get("url_base", _URL_BASE)
+        self._profile_dir = Path(self.opciones.get("profile_dir", str(_PROFILE_DIR)))
+        self._device_id   = self.opciones.get("device_id", _DEVICE_ID)
+        self._client_name = self.opciones.get("client_name", "WEB 0.38.2")
 
     # ── Lifecycle: persistent context ────────────────────────────────────────
 
     async def __aenter__(self):
-        _PROFILE_DIR.mkdir(parents=True, exist_ok=True)
+        self._profile_dir.mkdir(parents=True, exist_ok=True)
         self._playwright = await async_playwright().start()
         self._context = await self._playwright.chromium.launch_persistent_context(
-            str(_PROFILE_DIR),
+            str(self._profile_dir),
             headless=self.headless,
             slow_mo=50,
             accept_downloads=True,
@@ -110,7 +118,7 @@ class DhalmoreScraper(BaseScraper):
         self._setup_interceptors()
 
         logger.info("[%s] Cargando app...", self.nombre)
-        await self._page.goto(_URL_BASE, wait_until="networkidle", timeout=timeout)
+        await self._page.goto(self._url_base, wait_until="networkidle", timeout=timeout)
         await self._page.wait_for_timeout(3000)
 
         if "auth0" in self._page.url:
@@ -126,16 +134,18 @@ class DhalmoreScraper(BaseScraper):
             "input[placeholder*='código' i], input[placeholder*='code' i]"
         ).first
         if await code_input.count() > 0:
+            code_file = Path(f"/tmp/{self.nombre.lower()}_code.txt")
+            wait_file = Path(f"/tmp/{self.nombre.lower()}_waiting.txt")
             logger.warning("[%s] ⚠️  Device verification requerida!", self.nombre)
-            logger.warning("[%s]    Escribir código en /tmp/dhalmore_code.txt", self.nombre)
-            Path("/tmp/dhalmore_waiting.txt").write_text("waiting")
+            logger.warning("[%s]    Escribir código en %s", self.nombre, code_file)
+            wait_file.write_text("waiting")
             import time
             deadline = time.time() + 600
             while time.time() < deadline:
-                if Path("/tmp/dhalmore_code.txt").exists():
-                    code = Path("/tmp/dhalmore_code.txt").read_text().strip()
-                    Path("/tmp/dhalmore_code.txt").unlink(missing_ok=True)
-                    Path("/tmp/dhalmore_waiting.txt").unlink(missing_ok=True)
+                if code_file.exists():
+                    code = code_file.read_text().strip()
+                    code_file.unlink(missing_ok=True)
+                    wait_file.unlink(missing_ok=True)
                     await code_input.fill(code)
                     await self._page.click("button:has-text('Continuar')")
                     await self._page.wait_for_timeout(3000)
@@ -148,8 +158,25 @@ class DhalmoreScraper(BaseScraper):
         else:
             logger.info("[%s] Sin MFA — dispositivo conocido ✓", self.nombre)
 
-        # Esperar que el app cargue y el bearer quede actualizado
-        await self._page.wait_for_timeout(8000)
+        # Capturar el bearer: la SPA lo emite en su primer request autenticado a
+        # la API Fermi (o al refrescar el token vía /oauth/token). El tiempo hasta
+        # ese primer request es variable, así que hacemos polling y, si tarda,
+        # forzamos un reload que re-dispara las llamadas autenticadas del dashboard.
+        import time
+        for intento in range(4):
+            t0 = time.time()
+            while time.time() - t0 < 8:
+                if self._bearer:
+                    break
+                await self._page.wait_for_timeout(500)
+            if self._bearer:
+                break
+            logger.info("[%s] Bearer aún no capturado (intento %d/4) — recargando app",
+                        self.nombre, intento + 1)
+            try:
+                await self._page.reload(wait_until="networkidle", timeout=timeout)
+            except Exception:
+                pass
 
         if not self._bearer:
             logger.error("[%s] No se capturó bearer token", self.nombre)
@@ -164,7 +191,11 @@ class DhalmoreScraper(BaseScraper):
         return {
             "Authorization": self._bearer,
             "Accept":        "application/json, text/plain, */*",
-            **_EXTRA_HEADERS,
+            "x-device-id":                 self._device_id,
+            "x-use-wrapped-single-values": "true",
+            "x-client-name":               self._client_name,
+            "Origin":                      self._url_base.rstrip("/"),
+            "Referer":                     self._url_base,
         }
 
     async def _fetch_movements(
@@ -179,7 +210,7 @@ class DhalmoreScraper(BaseScraper):
         GET /checking-accounts/customer-account/{id}/historical-movements
             ?currency={currency}&type={tipo}&fromDate={ISO}&toDate={ISO}
         """
-        url = f"{_API_BASE}/checking-accounts/customer-account/{customer_account_id}/historical-movements"
+        url = f"{self._api_base}/checking-accounts/customer-account/{customer_account_id}/historical-movements"
         params = {
             "currency": currency,
             "type":     tipo_api,
@@ -210,7 +241,7 @@ class DhalmoreScraper(BaseScraper):
         Devuelve operaciones de venta de FCE/eCheq/Pagarés (operation=VCHV)
         para la fecha de operación indicada.
         """
-        url = f"{_API_BASE}/checking-accounts/customer-account/{customer_account_id}/historical-instrument-equities"
+        url = f"{self._api_base}/checking-accounts/customer-account/{customer_account_id}/historical-instrument-equities"
         params = {
             "fromDate": f"{fecha}T00:00:00.000Z",
             "toDate":   f"{fecha}T00:00:00.000Z",
@@ -241,7 +272,7 @@ class DhalmoreScraper(BaseScraper):
             ?orderCode={orderCode}&receiptCode={receiptCode}
         """
         url = (
-            f"{_API_BASE}/checking-accounts/customer-account/{customer_account_id}"
+            f"{self._api_base}/checking-accounts/customer-account/{customer_account_id}"
             f"/ticket/{document_key}"
         )
         params = {"orderCode": order_code, "receiptCode": receipt_code}
@@ -283,8 +314,12 @@ class DhalmoreScraper(BaseScraper):
         paths_descargados: list[Path] = []
 
         for cuenta in cuentas:
-            cid    = cuenta.get("customer_account_id", 56553)
+            cid    = cuenta.get("customer_account_id")
             cnombre = cuenta.get("nombre", "")
+            if not cid:
+                logger.warning("[%s] Cuenta '%s' sin customer_account_id — omitiendo",
+                               self.nombre, cnombre or "?")
+                continue
 
             for tipo_op in tipos_config:
                 if tipo_op == "Venta FCE-eCheq":
@@ -330,8 +365,8 @@ class DhalmoreScraper(BaseScraper):
                         continue
                     seen_keys.add(doc_key)
 
-                    # Nombre de archivo: Boleto - Dhalmore - {orderCode}.pdf
-                    fname = tipo_dir / f"Boleto - Dhalmore - {order_code}.pdf"
+                    # Nombre de archivo: Boleto - {ALYC} - {orderCode}.pdf
+                    fname = tipo_dir / f"Boleto - {self.nombre} - {order_code}.pdf"
                     if fname.exists():
                         logger.info("[%s] Skip (ya existe): %s", self.nombre, fname.name)
                         paths_descargados.append(fname)
@@ -365,8 +400,10 @@ class DhalmoreScraper(BaseScraper):
 
         seen_fce: set[str] = set()
         for cuenta in cuentas:
-            cid     = cuenta.get("customer_account_id", 56553)
+            cid     = cuenta.get("customer_account_id")
             cnombre = cuenta.get("nombre", "")
+            if not cid:
+                continue
             fce_movs = await self._fetch_fce_movements(cid, fecha)
             logger.info("[%s] %s/FCE/%s → %d operaciones VCHV",
                         self.nombre, cnombre or cid, fecha, len(fce_movs))
@@ -380,7 +417,7 @@ class DhalmoreScraper(BaseScraper):
                     continue
                 seen_fce.add(doc_key)
 
-                fname = fce_dir / f"Boleto - Dhalmore - {order_code}.pdf"
+                fname = fce_dir / f"Boleto - {self.nombre} - {order_code}.pdf"
                 if fname.exists():
                     logger.info("[%s] Skip FCE (ya existe): %s", self.nombre, fname.name)
                     paths_descargados.append(fname)

@@ -37,31 +37,32 @@
     },
     {
       "nombre": "WIN",
-      "sistema": "sistemaC",
+      "sistema": "sistemaG",
       "activo": true,
-      "url_login": "https://clientes.winsa.com.ar/",
-      "documento": "${WIN_DOCUMENTO}",
+      "url_login": "https://login.winsa.com.ar/",
       "usuario": "${WIN_USUARIO}",
       "contrasena": "${WIN_PASSWORD}",
       "opciones": {
         "tipo_operacion": [
-          "Pases",
-          "Cauciones",
-          "Títulos"
+          "Cauciones"
         ],
-        "timeout_ms": 30000,
+        "timeout_ms": 60000,
+        "api_base": "https://core.winsa.prod.fermi.galloestudio.com/api",
+        "url_base": "https://login.winsa.com.ar/",
+        "profile_dir": "browser_profiles/win",
+        "device_id": "b4a12114-d8ed-4a73-afa0-8de2cff042da",
         "cuentas": [
           {
             "nombre": "MeridianoNorte",
-            "comitente": "50015"
+            "customer_account_id": 64346
+          },
+          {
+            "nombre": "Mancia",
+            "customer_account_id": 64347
           },
           {
             "nombre": "Pamat",
-            "comitente": "50017"
-          },
-          {
-            "nombre": "Clinicaltech",
-            "comitente": "50203"
+            "customer_account_id": 64348
           }
         ]
       }
