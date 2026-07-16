@@ -147,16 +147,29 @@ def _find_delta_fechas(alycs: list[dict]) -> list[str]:
     return faltantes
 
 
+def _short_err(text: str | None, limit: int = 180) -> str:
+    """Primera línea del error, sin el 'Call log' de Playwright, capada a `limit`."""
+    if not text:
+        return ""
+    first = str(text).splitlines()[0].strip()
+    return first[:limit] + ("…" if len(first) > limit else "")
+
+
 async def process_alyc_batch(
     alyc_cfg: dict,
     general_cfg: dict,
     fechas: list[str],
     uploader: DriveUploader,
+    error_sink: list | None = None,
 ) -> tuple[int, int, int]:
     """
     Abre UNA sesión para la ALYC y procesa todas las fechas dentro de ella.
     Registra una corrida + detalle en Supabase por cada (fecha, ALYC).
     Retorna (descargados, subidos, errores).
+
+    Si se pasa `error_sink` (lista), se le agregan los errores TÉCNICOS
+    (login/sesión, descarga o upload) como dicts {alyc, fecha, error} para
+    poder alertarlos luego. Una fecha sin boletos NO es error y no se agrega.
     """
     nombre = alyc_cfg["nombre"]
     sistema = alyc_cfg["sistema"]
@@ -220,6 +233,12 @@ async def process_alyc_batch(
 
                 finally:
                     estado = "ok" if fecha_error is None and fe == 0 else "error"
+                    if estado == "error" and error_sink is not None:
+                        error_sink.append({
+                            "alyc": nombre,
+                            "fecha": fecha,
+                            "error": _short_err(fecha_error) if fecha_error else f"{fe} upload(s) fallaron",
+                        })
                     if detalle_id:
                         finish_alyc_detalle(
                             detalle_id, fd, fs, fe,
@@ -235,6 +254,12 @@ async def process_alyc_batch(
     except Exception as exc:
         logger.error("[%s] Sesión abortada — %s: %s", nombre, type(exc).__name__, exc)
         total_err += 1
+        if error_sink is not None:
+            error_sink.append({
+                "alyc": nombre,
+                "fecha": None,  # falló el login/sesión: afecta todas las fechas
+                "error": f"Sesión abortada: {type(exc).__name__}: {_short_err(str(exc))}",
+            })
 
     logger.info("[%s] TOTAL: desc=%d  sub=%d  err=%d", nombre, total_desc, total_sub, total_err)
     return total_desc, total_sub, total_err
@@ -263,6 +288,10 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--alyc", dest="alycs", action="append", metavar="NOMBRE",
         help="Procesar solo esta ALYC (repetible: --alyc ADCAP --alyc Criteria)",
+    )
+    parser.add_argument(
+        "--no-slack", dest="no_slack", action="store_true",
+        help="No enviar alerta a Slack ante errores técnicos (útil en backfills manuales)",
     )
     parser.add_argument(
         "rango", nargs="*",
@@ -361,8 +390,11 @@ async def main() -> int:
 
     # ── Procesar ──────────────────────────────────────────────────────────
     grand_desc = grand_sub = grand_err = 0
+    errores_tecnicos: list[dict] = []
     for alyc_cfg in alycs:
-        desc, sub, err = await process_alyc_batch(alyc_cfg, general, fechas, uploader)
+        desc, sub, err = await process_alyc_batch(
+            alyc_cfg, general, fechas, uploader, error_sink=errores_tecnicos,
+        )
         grand_desc += desc
         grand_sub  += sub
         grand_err  += err
@@ -370,6 +402,25 @@ async def main() -> int:
     logger.info("=" * 60)
     logger.info("RESUMEN FINAL: desc=%d  sub=%d  err=%d", grand_desc, grand_sub, grand_err)
     logger.info("=" * 60)
+
+    # ── Alerta Slack de errores técnicos (no de "sin boletos") ────────────
+    if errores_tecnicos and not args.no_slack:
+        lineas = "\n".join(
+            f"  • {e['alyc']}"
+            + (f" / {e['fecha']}" if e["fecha"] else " (login/sesión)")
+            + f" — {e['error']}"
+            for e in errores_tecnicos
+        )
+        try:
+            from slack_notifier import send_alarm
+            send_alarm(
+                f"*Errores técnicos en la descarga* (rango {fechas[0]} → {fechas[-1]}):\n"
+                f"{lineas}\n"
+                "_Las ALYCs sin operaciones no aparecen acá; esto son fallas de acceso/descarga._"
+            )
+        except Exception as exc:
+            logger.error("No se pudo enviar alerta Slack: %s", exc)
+
     return 0 if grand_err == 0 else 1
 
 

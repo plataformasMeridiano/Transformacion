@@ -147,15 +147,13 @@ def phase_reconcile(ventana_desde: str) -> bool:
 
 
 def phase_download() -> bool:
-    """Descarga boletos en modo delta (todos los ALYCs, todas las operaciones)."""
+    """Descarga boletos en modo delta (todos los ALYCs, todas las operaciones).
+
+    Los errores técnicos por (ALYC, fecha) los alerta `batch_download.py` en
+    detalle vía Slack; acá solo marcamos la fase como fallida para el resumen.
+    """
     exit_code = _run(["python3", "batch_download.py", "--delta"], "1/4 download")
-    if exit_code != 0:
-        send_alarm(
-            f"*batch_download falló* (exit={exit_code})\n"
-            "Los boletos del día pueden estar incompletos. Revisar log."
-        )
-        return False
-    return True
+    return exit_code == 0
 
 
 def phase_cocos(desde: str) -> bool:
