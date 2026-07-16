@@ -405,6 +405,8 @@ async def main() -> int:
 
     # ── Alerta Slack de errores técnicos (no de "sin boletos") ────────────
     if errores_tecnicos and not args.no_slack:
+        # Mención a notificar (Plataformas Meridiano); configurable por env.
+        mention = os.environ.get("SLACK_ALERT_MENTION", "<@U09LN5TEG8H>")
         lineas = "\n".join(
             f"  • {e['alyc']}"
             + (f" / {e['fecha']}" if e["fecha"] else " (login/sesión)")
@@ -414,7 +416,7 @@ async def main() -> int:
         try:
             from slack_notifier import send_alarm
             send_alarm(
-                f"*Errores técnicos en la descarga* (rango {fechas[0]} → {fechas[-1]}):\n"
+                f"{mention} *Errores técnicos en la descarga* (rango {fechas[0]} → {fechas[-1]}):\n"
                 f"{lineas}\n"
                 "_Las ALYCs sin operaciones no aparecen acá; esto son fallas de acceso/descarga._"
             )
