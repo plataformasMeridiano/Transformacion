@@ -58,6 +58,8 @@ downloads/
 
 - **DA Valores (sistemaB):** agregado 2026-03-20. Mismo portal VBhome/Unisync que ADCAP. Solo cuenta MeridianoNorte. Backfill completo: 66 boletos en 19 fechas (2026-02-23 → 2026-03-19). Zapier procesado para todas esas fechas con `run_da_zapier.py` (19/19 OK, `status=Fin Cauciones`).
 
+- **DA Valores — nombre de archivo en Drive (2026-07-17, commit `6e370ca`):** los boletos se guardaban como `Boleto - DAValores - {nro}.pdf` y debían ser `Boleto - DA Valores - {nro}.pdf`. Se agregó `_ALYC_DRIVE_NAME` en `drive_uploader.py` (ver Notas técnicas): el identificador interno sigue siendo `DAValores`, solo cambia el nombre visible del archivo. Aplica a todos los tipos (Pases, Cauciones, FCE, Colocadoras). **Los 743 boletos históricos ya en Drive se renombraron** in-place (mismo `file_id`, no rompe `drive_file_id` de Supabase ni links de Jira): Pases 532, Cauciones 146, Venta FCE-eCheq 63, Colocadoras 2 (feb→jul), 0 errores. Con el rename no quedan duplicados al reprocesar fechas viejas.
+
 - **IEB (scraper propio):** agregado 2026-07-06. Portal ASP.NET MVC en `clientesv2.invertirenbolsa.com.ar`. Solo comitente MeridianoNorte (365533). Descarga via `GetComprobante {clave: CLAV}` → base64 PDF.
 
 - **IEB — descarga por fecha de CONCERTACIÓN (rediseño 2026-07-14, commit `2d32cfb`):** el enfoque original archivaba las cauciones filtrando `CuentaCorrientePesos` (proceso=02) por `FEC1`, que para la pata de cierre (`TOCT`) es la **fecha de liquidación** → el cierre quedaba bajo su vencimiento y no bajo la concertación, y se perdían cierres de plazo largo. Nuevo flujo en dos pasos:
@@ -116,4 +118,20 @@ Script específico por ALYC: `run_da_zapier.py` — dispara Zapier solo para DAV
 - Puente usa **persistent context** (perfil en `browser_profiles/puente/`) para mantener sesión entre ejecuciones
 - `main.py` fuerza `headless=True` en producción; algunos scrapers tienen override `headless=false` en config
 - Variables de entorno se expanden con `_resolve_env()` desde el patrón `${VAR}`
-- El uploader organiza en Drive por: `root_folder / tipo_operacion / fecha / alyc_nombre / archivo.pdf`
+- El uploader organiza en Drive por: `root_folder / tipo_operacion / fecha / Boleto - {ALYC} - {NRO}.pdf`
+  (el archivo va plano bajo la fecha; no hay subcarpeta por ALYC). Los tipos con
+  `tipo_folder_overrides` cuelgan de su carpeta raíz propia en vez de `root / tipo`.
+
+- **Nombre visible de ALYC vs identificador interno:** el `nombre` de `config.json`
+  (ej. `DAValores`) es el **identificador interno** — se usa en carpetas locales
+  (`downloads/{nombre}/`), en Supabase (`procesamiento_boletos.alyc`) y en Zapier.
+  Para el **nombre del archivo en Drive** se traduce con `_ALYC_DRIVE_NAME` en
+  `drive_uploader.py` cuando el nombre visible difiere. Hoy solo aplica a
+  **`DAValores` → `DA Valores`**. Es el único punto donde se arma el nombre, así que
+  la traducción vale para `batch_download`, el reconcile de `daily_orchestrator` y
+  `main.py` sin tocar los callers. Convención alineada con
+  `jira_controller.FOLDER_TO_JIRA`, que ya mapea el nombre de la ALYC en Jira
+  (`DAValores`→`DA Valores`, `WIN`→`Win`, `MaxCapital`→`Max Capital`, `MetroCorp`→`Metrocorp`).
+  Si en el futuro se quiere alinear otra ALYC, agregarla a `_ALYC_DRIVE_NAME` **y**
+  renombrar los archivos históricos en Drive (si no, al reprocesar una fecha vieja
+  el uploader no encuentra el nombre nuevo y crea un duplicado).
