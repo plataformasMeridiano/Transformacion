@@ -11,6 +11,13 @@ logger = logging.getLogger(__name__)
 _SCOPES = ["https://www.googleapis.com/auth/drive"]
 _FOLDER_MIME = "application/vnd.google-apps.folder"
 
+# Nombre de la ALYC tal como debe figurar en el NOMBRE DEL ARCHIVO en Drive,
+# cuando difiere del identificador interno (config.json / carpetas / Supabase).
+# El identificador interno no cambia; esto es solo presentación.
+_ALYC_DRIVE_NAME: dict[str, str] = {
+    "DAValores": "DA Valores",
+}
+
 
 def nro_from_filename(filename: str) -> str:
     """
@@ -126,6 +133,8 @@ class DriveUploader:
             tipo_operacion: Nombre legible del tipo (ej: "Cauciones", "Pases").
             fecha:          Fecha en formato YYYY-MM-DD (nombre de la subcarpeta).
             alyc_nombre:    Nombre de la ALYC tal como figura en config.json.
+                            Para el nombre del archivo se traduce vía
+                            _ALYC_DRIVE_NAME si tiene un nombre visible distinto.
             nro_boleto:     Número del boleto (solo dígitos, ej: "38288").
             overwrite:      Si True y el archivo ya existe, reemplaza su contenido.
 
@@ -139,7 +148,8 @@ class DriveUploader:
             tipo_id  = self._get_or_create_folder(tipo_operacion, self._root_id)
             fecha_id = self._get_or_create_folder(fecha, tipo_id)
 
-        dest_name = f"Boleto - {alyc_nombre} - {nro_boleto}.pdf"
+        alyc_display = _ALYC_DRIVE_NAME.get(alyc_nombre, alyc_nombre)
+        dest_name = f"Boleto - {alyc_display} - {nro_boleto}.pdf"
 
         # Verificar si ya existe un archivo con el mismo nombre en la carpeta destino
         safe_name = dest_name.replace("'", "\\'")
