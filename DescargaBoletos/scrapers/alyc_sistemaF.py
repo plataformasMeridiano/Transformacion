@@ -201,17 +201,28 @@ class MetroCorpScraper(BaseScraper):
         page    = self._page
         timeout = self.opciones.get("timeout_ms", _TIMEOUT)
 
-        # Capturar bearer token del flujo OAuth
+        # Capturar bearer token del flujo OAuth.
+        #
+        # El portal lo movió dos veces, así que el match es amplio a propósito:
+        #   antes  POST /oauth/token                              → {access_token: …}
+        #   ahora  POST /api/v1/execute/oauth.oidc.passwordToken  → {code, data: {access_token: …}}
+        # Se busca en la raíz y dentro de "data". El token SOLO se emite durante el
+        # login: recargar /desktop no vuelve a pedirlo, así que si no se captura acá
+        # no hay de dónde sacarlo (tampoco queda en localStorage/sessionStorage).
         async def _capture_token(resp):
-            if "/oauth/token" in resp.url:
-                try:
-                    body = await resp.body()
-                    j    = json.loads(body)
-                    if "access_token" in j:
-                        self._bearer = f"bearer {j['access_token']}"
-                        logger.info("[%s] Bearer token capturado", self.nombre)
-                except Exception:
-                    pass
+            if "token" not in resp.url.lower():
+                return
+            try:
+                j = json.loads(await resp.body())
+            except Exception:
+                return
+            if not isinstance(j, dict):
+                return
+            data  = j.get("data") if isinstance(j.get("data"), dict) else {}
+            token = j.get("access_token") or data.get("access_token")
+            if token:
+                self._bearer = f"bearer {token}"
+                logger.info("[%s] Bearer token capturado (%s)", self.nombre, resp.url.rsplit("/", 1)[-1])
 
         page.on("response", _capture_token)
 
