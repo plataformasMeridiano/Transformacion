@@ -53,6 +53,10 @@ class MaxCapitalScraper(BaseScraper):
                                          Default: ["APTOMCONC", "APTOMFUTC"].
         colocadoras_codes  (list[str])   Códigos en "detail" que identifican cauciones colocadoras.
                                          Default: ["APCOLCON", "APCOLFUT"].
+        fce_codes          (list[str])   Códigos que identifican ventas FCE-eCheq (ej. VCHDIF).
+        ignorar_codes      (list[str])   Códigos a descartar: operaciones que el portal
+                                         lista entre los boletos pero no procesamos
+                                         (licitaciones, compra/venta exterior).
         tipo_operacion     (list[str])   Subtipos a descargar: "Cauciones", "Cauciones Colocadoras", "Pases".
     """
 
@@ -72,6 +76,10 @@ class MaxCapitalScraper(BaseScraper):
         )
         titulos_codes = self.opciones.get("titulos_codes", [])
         self._titulos_codes = frozenset(c.upper() for c in titulos_codes)
+        fce_codes = self.opciones.get("fce_codes", [])
+        self._fce_codes = frozenset(c.upper() for c in fce_codes)
+        ignorar_codes = self.opciones.get("ignorar_codes", [])
+        self._ignorar_codes = frozenset(c.upper() for c in ignorar_codes)
         self._auth_token: str | None = None
         self._gql_movements: dict | None = None
 
@@ -85,13 +93,27 @@ class MaxCapitalScraper(BaseScraper):
         self._page = await context.new_page()
         return self
 
-    def _classify_tipo(self, detail: str) -> str:
-        """Clasifica un boleto como 'Cauciones', 'Cauciones Colocadoras', 'Títulos' o 'Pases'.
+    def _classify_tipo(self, detail: str) -> str | None:
+        """Clasifica un boleto como 'Cauciones', 'Cauciones Colocadoras', 'Títulos',
+        'Venta FCE-eCheq' o 'Pases'. Devuelve None si el movimiento debe descartarse.
 
         detail format: "Boleto / 37087 / APTOMCONC / 0 / $"
+                       "Boleto MAE #76022 / CPA / 0 / ... / $"
+
+        El endpoint devuelve con `downloadId` muchos documentos que no son boletos
+        de operación (Comprobante de Pago, Nota de Crédito, Renta, Amortización,
+        Recibo de Cobro, Liquidación de Rescate/Suscripción, Interest payment).
+        Todos los boletos reales empiezan con "Boleto"; el resto se descarta, si no
+        cae en el default 'Pases'.
         """
         parts = [p.strip().upper() for p in detail.split("/")]
+        if not parts or not parts[0].startswith("BOLETO"):
+            return None
         for part in parts:
+            if part in self._ignorar_codes:
+                return None
+            if part in self._fce_codes:
+                return "Venta FCE-eCheq"
             if part in self._caucion_codes:
                 return "Cauciones"
             if part in self._colocadoras_codes:

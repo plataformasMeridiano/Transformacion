@@ -48,6 +48,9 @@ class AdcapScraper(BaseScraper):
                                          Default: ["APCOLCON", "APCOLFUT"] (igual en VBhome).
         fce_codes          (list[str])   Códigos que identifican ventas FCE-eCheq.
                                          Ejemplo ADCAP: ["VCHDIF"].
+        ignorar_codes      (list[str])   Códigos a descartar: documentos que el portal
+                                         lista entre los boletos pero no son operaciones
+                                         nuestras (licitaciones, futuros, por mandato).
         tipo_operacion     (list[str])   Subtipos a descargar: "Cauciones", "Pases",
                                          "Cauciones Colocadoras", "Venta FCE-eCheq".
     """
@@ -70,11 +73,20 @@ class AdcapScraper(BaseScraper):
         self._fce_codes = frozenset(c.upper() for c in fce_codes)
         titulos_codes = self.opciones.get("titulos_codes", [])
         self._titulos_codes = frozenset(c.upper() for c in titulos_codes)
+        ignorar_codes = self.opciones.get("ignorar_codes", [])
+        self._ignorar_codes = frozenset(c.upper() for c in ignorar_codes)
 
-    def _classify_tipo(self, cells: list[str]) -> str:
-        """Clasifica un boleto como 'Cauciones', 'Cauciones Colocadoras', 'Títulos', 'Pases' o 'Venta FCE-eCheq'."""
+    def _classify_tipo(self, cells: list[str]) -> str | None:
+        """Clasifica un boleto como 'Cauciones', 'Cauciones Colocadoras', 'Títulos', 'Pases' o 'Venta FCE-eCheq'.
+
+        Devuelve None si el código está en `ignorar_codes` — el portal lista en la
+        grilla de boletos documentos que no son operaciones nuestras (licitaciones,
+        futuros, operaciones por mandato). Sin esa lista caen en el default 'Pases'.
+        """
         for cell in cells:
             code = cell.strip().upper()
+            if code in self._ignorar_codes:
+                return None
             if code in self._fce_codes:
                 return "Venta FCE-eCheq"
             if code in self._caucion_codes:
