@@ -9,9 +9,9 @@
     "credentials_file": "credentials/gdrive_service_account.json",
     "root_folder_id": "${GDRIVE_ROOT_FOLDER_ID}",
     "tipo_folder_overrides": {
-      "Venta FCE-eCheq":       "1NbLIYvULKie7qhhKfKCZ3JW4kJg6uBVY",
+      "Venta FCE-eCheq": "1NbLIYvULKie7qhhKfKCZ3JW4kJg6uBVY",
       "Cauciones Colocadoras": "17WiNDbl5lsJeC1DpgX3lr-FqrgMHNQTr",
-      "Títulos":               "1yJ5ylQfgnaMBMa6x3OXm7kmUjY8ucs7m"
+      "Títulos": "1yJ5ylQfgnaMBMa6x3OXm7kmUjY8ucs7m"
     }
   },
   "alycs": [
@@ -71,17 +71,14 @@
       "nombre": "Allaria",
       "sistema": "sistemaH",
       "activo": true,
-      "url_login": "https://allaria-ssl.allaria.com.ar/AllariaOnline/VBolsaNet/login.html#!/login",
+      "url_login": "https://app.allaria.com.ar/",
       "usuario": "${ALLARIA_USUARIO}",
       "contrasena": "${ALLARIA_PASSWORD}",
       "opciones": {
         "headless": false,
         "totp_secret": "${ALLARIA_TOTP_SECRET}",
-        "caucion_codes": [
-          "APCOLCON",
-          "APCOLFUT"
-        ],
-        "titulos_codes": ["COMPRA", "VENTA"],
+        "cuenta": "131864",
+        "ventana_dias": 45,
         "tipo_operacion": [
           "Venta FCE-eCheq",
           "Cauciones Colocadoras",
@@ -108,7 +105,10 @@
         "fce_codes": [
           "VCHDIF"
         ],
-        "titulos_codes": ["COMPRA", "VENTA"],
+        "titulos_codes": [
+          "COMPRA",
+          "VENTA"
+        ],
         "timeout_ms": 30000,
         "cuentas": [
           {
@@ -136,7 +136,10 @@
           "Cauciones Colocadoras",
           "Títulos"
         ],
-        "titulos_codes": ["COMPRA", "VENTA"],
+        "titulos_codes": [
+          "COMPRA",
+          "VENTA"
+        ],
         "timeout_ms": 30000,
         "cuentas": [
           {
@@ -172,7 +175,18 @@
         "fce_codes": [
           "VCHDIF"
         ],
-        "titulos_codes": ["COMPRA", "VENTA"],
+        "titulos_codes": [
+          "COMPRA",
+          "VENTA"
+        ],
+        "ignorar_codes": [
+          "LICOMPRA",
+          "LIVENTA",
+          "FICOMPRA",
+          "FIVENTA",
+          "COMPRAEXT",
+          "VENTAEXT"
+        ],
         "timeout_ms": 30000
       }
     },
@@ -206,12 +220,22 @@
           "APTOMCONC",
           "APTOMFUTC"
         ],
-        "titulos_codes": ["CPA", "VTA"],
+        "titulos_codes": [],
+        "fce_codes": [
+          "VCHDIF"
+        ],
+        "ignorar_codes": [
+          "LICOMPRA",
+          "LIVENTA",
+          "COMPRAEXT",
+          "VENTAEXT"
+        ],
         "tipo_operacion": [
           "Cauciones",
           "Cauciones Colocadoras",
           "Pases",
-          "Títulos"
+          "Títulos",
+          "Venta FCE-eCheq"
         ],
         "timeout_ms": 45000,
         "cuentas": [
@@ -239,7 +263,10 @@
           "Tomadora",
           "Colocadora"
         ],
-        "titulos_conceptos": ["Compra", "Venta"],
+        "titulos_conceptos": [
+          "Compra",
+          "Venta"
+        ],
         "tipo_operacion": [
           "Cauciones",
           "Cauciones Colocadoras",
@@ -262,7 +289,10 @@
           "Tomadora",
           "Colocadora"
         ],
-        "titulos_conceptos": ["Compra", "Venta"],
+        "titulos_conceptos": [
+          "Compra",
+          "Venta"
+        ],
         "tipo_operacion": [
           "Cauciones",
           "Cauciones Colocadoras",
@@ -357,7 +387,10 @@
           "Cauciones",
           "Pases"
         ],
-        "caucion_codes": ["TCC", "TOCT"],
+        "caucion_codes": [
+          "TCC",
+          "TOCT"
+        ],
         "colocadoras_codes": [],
         "pase_codes": [],
         "timeout_ms": 30000
