@@ -104,6 +104,12 @@ class MetroCorpScraper(BaseScraper):
             if titulos_kw is not None
             else frozenset()
         )
+        pase_kw = self.opciones.get("pase_keywords")
+        self._pase_kw = (
+            frozenset(k.upper() for k in pase_kw)
+            if pase_kw is not None
+            else frozenset()
+        )
         self._bearer: str = ""
         self._dni = self._resolve(alyc_config.get("documento", ""))
 
@@ -119,7 +125,15 @@ class MetroCorpScraper(BaseScraper):
           2. Si coincide con alguna fce_keyword → "Venta FCE-eCheq"
           3. Si contiene "COLOCACION" → "Cauciones Colocadoras"
           4. Si coincide con alguna caucion_keyword → "Cauciones" (tomadoras)
-          5. De lo contrario → "Pases"
+          5. Si coincide con alguna pase_keyword → "Pases"
+          6. De lo contrario → None (se ignora el movimiento)
+
+        El paso 6 antes devolvía "Pases" como cajón de sastre, y eso hacía que se
+        descargara cualquier movimiento administrativo del portal — depósitos en
+        cuenta corriente, garantías, retiros de Caja de Valores — como si fueran
+        boletos de pase. Además, esos comprobantes no traen número, así que el
+        parser los guardaba todos como "001". Ahora "Pases" exige keywords
+        explícitas, igual que FCE y Títulos.
         """
         desc_up = descripcion.upper()
         logger.debug("[%s] _classify: '%s'", self.nombre, descripcion)
@@ -134,7 +148,10 @@ class MetroCorpScraper(BaseScraper):
             return "Cauciones"
         if self._titulos_kw and any(kw in desc_up for kw in self._titulos_kw):
             return "Títulos"
-        return "Pases"
+        if self._pase_kw and any(kw in desc_up for kw in self._pase_kw):
+            return "Pases"
+        logger.debug("[%s] Sin clasificar — se ignora: '%s'", self.nombre, descripcion)
+        return None
 
     @staticmethod
     def _make_iso(fecha_str: str) -> str:
