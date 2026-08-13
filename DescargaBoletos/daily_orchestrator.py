@@ -9,7 +9,9 @@ Reemplaza run_daily.sh. Fases:
   4. FCE Ventas  — webhook ujlo78k para cada (alyc, fecha) con boletos Venta FCE-eCheq
   5. Zapier      — run_boletos_zapier.py para los últimos días hábiles
   6. Jira        — verifica que cada boleto local tenga issue; alerta en Slack si no
-  7. Resumen     — tabla por fecha en Slack
+  7. Control     — control_jira.py: graba el issue de cada boleto en Supabase y
+                   reprocesa los que falten, retomando desde el último checkpoint
+  8. Resumen     — tabla por fecha en Slack
 
 Uso (cron):
     0 12 * * 1-6 cd /ruta && xvfb-run --auto-servernum python3 daily_orchestrator.py >> logs/cron.log 2>&1
@@ -250,6 +252,49 @@ def phase_zapier(desde: str, hasta: str) -> bool:
     return True
 
 
+def phase_control_jira() -> int:
+    """
+    Fase 6: cierra el ciclo de los boletos descargados desde el último control.
+
+    Busca en Jira el issue de cada uno por (nro_boleto, ALyC), lo graba en
+    `procesamiento_boletos.jira_issue_key`, y para los que falten dispara el
+    reproceso agrupando por (alyc, fecha) — la granularidad que acepta el webhook.
+
+    A diferencia de `phase_verify`, se apoya en Supabase y no en el disco, así que
+    no depende de FOLDER_TO_JIRA: ese filtro dejó a IEB sin verificar por semanas.
+
+    Retorna cuántos boletos siguen sin issue después de reprocesar.
+    """
+    logger = logging.getLogger("orchestrator")
+    logger.info("─" * 55)
+    logger.info("[6/6 control] Cerrando ciclo descarga → Jira")
+
+    try:
+        from control_jira import controlar, _rango_por_defecto
+        desde, hasta = _rango_por_defecto()
+        r = controlar(desde, hasta, checkpoint=True)
+    except Exception as exc:
+        logger.error("[control] Falló: %s", exc)
+        send_alarm(f"*Control descarga → Jira falló*: `{exc}`")
+        return 0
+
+    logger.info("[control] revisados=%d  con issue=%d  reprocesados=%d  sin issue=%d  omitidos=%d",
+                r["revisados"], r["resueltos"], len(r.get("en_curso", [])),
+                len(r["faltantes"]), r.get("omitidos", 0))
+
+    faltantes = r["faltantes"]
+    if faltantes:
+        lineas = "\n".join(
+            f"  • {b['alyc']} / {b['tipo']}  nro={b['nro_boleto']}  (operación {b['fecha_operacion']})"
+            for b in faltantes[:25]
+        )
+        extra = f"\n  …y {len(faltantes) - 25} más" if len(faltantes) > 25 else ""
+        send_alarm(
+            f"*{len(faltantes)} boleto(s) siguen sin issue tras varios reprocesos*\n{lineas}{extra}"
+        )
+    return len(faltantes)
+
+
 def phase_verify(fechas: list[str]) -> int:
     """
     Verifica local vs Jira para cada fecha.
@@ -359,12 +404,16 @@ def main() -> int:
     fechas = _bdays(date.fromisoformat(desde), date.fromisoformat(hasta))
     total_faltantes = phase_verify(fechas)
 
+    # Phase 6 — Control descarga → Jira (cierra el ciclo y repara)
+    sin_issue = phase_control_jira()
+
     # Resumen final
-    if errores or total_faltantes > 0:
+    if errores or total_faltantes > 0 or sin_issue > 0:
         resumen = (
             f"⚠️ *Procesamiento {hoy} — con advertencias*\n"
             f"  Fases con error: {', '.join(errores) if errores else 'ninguna'}\n"
-            f"  Boletos sin Jira: {total_faltantes}"
+            f"  Boletos sin Jira: {total_faltantes}\n"
+            f"  Sin issue tras reprocesar: {sin_issue}"
         )
     else:
         resumen = f"✅ *Procesamiento {hoy} — todo OK*"

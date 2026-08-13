@@ -10,7 +10,8 @@
     "root_folder_id": "${GDRIVE_ROOT_FOLDER_ID}",
     "tipo_folder_overrides": {
       "Venta FCE-eCheq": "1NbLIYvULKie7qhhKfKCZ3JW4kJg6uBVY",
-      "Cauciones Colocadoras": "17WiNDbl5lsJeC1DpgX3lr-FqrgMHNQTr",
+      "_comentario_colocadoras": "Las colocadoras van a la MISMA carpeta que las cauciones: el Zap solo lista Cauciones/{fecha}/ y el LLM rutea por sentido (colocador → Débito Bursátil en ACT). La carpeta propia 17WiNDbl5lsJeC1DpgX3lr-FqrgMHNQTr quedó sin uso.",
+      "Cauciones Colocadoras": "1jXRJU4gfRUD0y8v66I5dL2PWPP-PgOTr",
       "Títulos": "1yJ5ylQfgnaMBMa6x3OXm7kmUjY8ucs7m"
     }
   },
