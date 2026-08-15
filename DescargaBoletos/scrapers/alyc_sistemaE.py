@@ -7,7 +7,7 @@ from pathlib import Path
 from urllib.parse import quote
 import base64
 
-from playwright.async_api import async_playwright
+from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
 from .base_scraper import BaseScraper
 
 logger = logging.getLogger(__name__)
@@ -16,6 +16,9 @@ _TIMEOUT = 30_000
 _GQL_URL       = "https://home.max.capital/backend/api/graphql"
 _DOWNLOAD_BASE = "https://home.max.capital/backend/api/v1/files/receipts/pdf"
 _HOME_URL      = "https://home.max.capital/"
+_PROFILE_DIR   = Path(__file__).parent.parent / "browser_profiles" / "maxcapital"
+_CHROME_PATH   = "/usr/bin/google-chrome-stable"
+_LOGIN_INTENTOS = 3
 
 # Códigos de operación en el campo "detail"
 # detail = "Boleto / 37087 / APTOMCONC / 0 / $"
@@ -82,15 +85,29 @@ class MaxCapitalScraper(BaseScraper):
         self._ignorar_codes = frozenset(c.upper() for c in ignorar_codes)
         self._auth_token: str | None = None
         self._gql_movements: dict | None = None
+        self._context = None   # persistent context (no _browser)
+        self._profile_dir = Path(self.opciones.get("profile_dir", str(_PROFILE_DIR)))
 
     async def __aenter__(self):
+        # Perfil persistente: home.max.capital está detrás de Cloudflare y a un
+        # contexto nuevo le planta un desafío Turnstile que nunca se resuelve
+        # solo — el formulario de Keycloak no llega a renderizar y el login
+        # expira. Con el perfil se conserva la cookie `cf_clearance` entre
+        # corridas y el desafío no se vuelve a plantear.
+        self._profile_dir.mkdir(parents=True, exist_ok=True)
         self._playwright = await async_playwright().start()
-        self._browser = await self._playwright.chromium.launch(
+        chrome = {"executable_path": _CHROME_PATH} if Path(_CHROME_PATH).exists() else {}
+        self._context = await self._playwright.chromium.launch_persistent_context(
+            str(self._profile_dir),
             headless=self.headless,
+            accept_downloads=True,
             args=["--disable-blink-features=AutomationControlled"],
+            **chrome,
         )
-        context = await self._browser.new_context(accept_downloads=True)
-        self._page = await context.new_page()
+        self._page = (
+            self._context.pages[0] if self._context.pages
+            else await self._context.new_page()
+        )
         return self
 
     def _classify_tipo(self, detail: str) -> str | None:
@@ -153,9 +170,38 @@ class MaxCapitalScraper(BaseScraper):
         logger.info("[%s] Navegando a %s", self.nombre, self.url_login)
         await page.goto(self.url_login, wait_until="domcontentloaded", timeout=timeout)
 
-        # Esperar formulario Keycloak (el JS redirect puede tardar)
+        # Esperar formulario Keycloak (el JS redirect puede tardar).
+        # Con el perfil vacío la primera navegación se come el desafío de
+        # Cloudflare y el formulario no renderiza; el desafío se resuelve unos
+        # segundos después y deja `cf_clearance` en el perfil, así que el
+        # reintento entra derecho. Sin esto se perdía la corrida entera.
+        # Se espera el formulario O la pantalla de selección de cuenta: con el
+        # perfil persistente la sesión puede seguir viva y el portal saltea
+        # Keycloak por completo, así que esperar solo el formulario expiraba
+        # estando ya autenticado.
         logger.info("[%s] Esperando formulario Keycloak", self.nombre)
-        await page.wait_for_selector("#usernameLoginWeb", timeout=timeout)
+        for intento in range(1, _LOGIN_INTENTOS + 1):
+            try:
+                await page.wait_for_selector("#usernameLoginWeb, input[type='radio']",
+                                             timeout=timeout)
+                break
+            except PlaywrightTimeout:
+                titulo = (await page.title()) or ""
+                bloqueo = ("desafío Cloudflare" if "moment" in titulo.lower()
+                           or "verif" in titulo.lower() else f"título {titulo!r}")
+                if intento == _LOGIN_INTENTOS:
+                    logger.error("[%s] Login bloqueado (%s) tras %d intentos",
+                                 self.nombre, bloqueo, _LOGIN_INTENTOS)
+                    raise
+                logger.warning("[%s] Login bloqueado (%s) — reintento %d/%d",
+                               self.nombre, bloqueo, intento, _LOGIN_INTENTOS)
+                await page.goto(self.url_login, wait_until="domcontentloaded",
+                                timeout=timeout)
+        if not await page.query_selector("#usernameLoginWeb"):
+            logger.info("[%s] Sesión del perfil todavía válida — se omite Keycloak",
+                        self.nombre)
+            return True
+
         logger.info("[%s] Keycloak URL: %s", self.nombre, page.url)
 
         await page.fill("#usernameLoginWeb", self.usuario)
