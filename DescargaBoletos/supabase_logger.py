@@ -11,13 +11,19 @@ import logging
 import os
 import urllib.request
 import urllib.error
+import urllib.parse
 from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
-_TABLE_BOLETOS  = "procesamiento_boletos"
-_TABLE_CORRIDAS = "descargas_cauciones_corridas_log"
-_TABLE_DETALLE  = "descargas_cauciones_corridas_detalle_log"
+_TABLE_BOLETOS   = "procesamiento_boletos"
+_TABLE_DESCARGAS = "procesamiento_boletos_descargas"
+_TABLE_CONTROL   = "control_jira_corridas"
+_TABLE_CORRIDAS  = "descargas_cauciones_corridas_log"
+_TABLE_DETALLE   = "descargas_cauciones_corridas_detalle_log"
+
+# Clave natural de procesamiento_boletos (índice único) — para el upsert.
+_BOLETOS_CONFLICT = "alyc,tipo,nro_boleto,fecha_operacion"
 
 
 def _get_client() -> tuple[str, str]:
@@ -53,6 +59,34 @@ def _post(table: str, payload: dict, return_rep: bool = False) -> dict | None:
         return {}
     except Exception as exc:
         logger.warning("Supabase POST falló [%s]: %s", table, exc)
+        return None
+
+
+def _upsert(table: str, payload: dict, on_conflict: str) -> dict | None:
+    """INSERT ... ON CONFLICT DO UPDATE sobre `on_conflict`. Retorna el registro resultante.
+
+    `merge-duplicates` sólo pisa las columnas presentes en el payload, así que omitir
+    una columna (ej. drive_file_id cuando todavía no hay) conserva el valor guardado.
+    """
+    try:
+        url, key = _get_client()
+        endpoint = f"{url}/rest/v1/{table}?on_conflict={on_conflict}"
+        req = urllib.request.Request(
+            endpoint,
+            data=json.dumps(payload).encode(),
+            method="POST",
+            headers={
+                "apikey":        key,
+                "Authorization": f"Bearer {key}",
+                "Content-Type":  "application/json",
+                "Prefer":        "resolution=merge-duplicates,return=representation",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            body = json.loads(resp.read())
+            return body[0] if isinstance(body, list) and body else body
+    except Exception as exc:
+        logger.warning("Supabase UPSERT falló [%s]: %s", table, exc)
         return None
 
 
@@ -92,22 +126,45 @@ def log_boleto(
     drive_file_id: str | None = None,
 ) -> str | None:
     """
-    Inserta un registro en procesamiento_boletos.
-    Retorna el UUID del registro insertado, o None si falló.
-    Llamar con drive_file_id=None tras descarga local; luego update_boleto_drive() tras subir.
+    Registra un boleto descargado. Retorna el id del registro, o None si falló.
+
+    `procesamiento_boletos` tiene UNA fila por boleto (unique alyc+tipo+nro+fecha_operacion),
+    así que esto es un **upsert**: el cron re-descarga los últimos días hábiles y sin esto
+    la tabla acumulaba ~5 filas por boleto.
+
+    Cada descarga deja además una fila en `procesamiento_boletos_descargas` (auditoría).
+
+    Llamar con drive_file_id=None tras la descarga local; luego update_boleto_drive() tras subir.
     """
-    result = _post(_TABLE_BOLETOS, {
+    ahora = datetime.now(timezone.utc).isoformat()
+    fila = {
         "fecha_operacion": fecha_operacion,
         "alyc":            alyc,
         "tipo":            tipo,
         "nro_boleto":      str(nro_boleto),
         "filename":        filename,
-        "drive_file_id":   drive_file_id,
-        "fecha_descarga":  datetime.now(timezone.utc).isoformat(),
-    }, return_rep=True)
-    if result:
-        return result.get("id")
-    return None
+        "fecha_descarga":  ahora,
+    }
+    # No pisar con NULL un drive_file_id ya guardado: en el upsert solo se manda
+    # la columna cuando hay valor.
+    if drive_file_id:
+        fila["drive_file_id"] = drive_file_id
+
+    result = _upsert(_TABLE_BOLETOS, fila, on_conflict=_BOLETOS_CONFLICT)
+    boleto_id = result.get("id") if result else None
+
+    if boleto_id:
+        _post(_TABLE_DESCARGAS, {
+            "boleto_id":       boleto_id,
+            "fecha_operacion": fecha_operacion,
+            "alyc":            alyc,
+            "tipo":            tipo,
+            "nro_boleto":      str(nro_boleto),
+            "filename":        filename,
+            "drive_file_id":   drive_file_id,
+            "fecha_descarga":  ahora,
+        })
+    return boleto_id
 
 
 def update_boleto_drive(boleto_id: str, drive_file_id: str) -> bool:
@@ -138,6 +195,90 @@ def get_boletos_sin_drive() -> list[dict]:
     except Exception as exc:
         logger.warning("get_boletos_sin_drive falló: %s", exc)
         return []
+
+
+def get_boletos_sin_jira(desde: str, hasta: str | None = None) -> list[dict]:
+    """Boletos sin issue de Jira: los de la ventana MÁS los que quedaron pendientes.
+
+    `desde`/`hasta` filtran por `fecha_descarga`, no por fecha de operación.
+
+    Además de la ventana se arrastran los que ya tienen `reproceso_intentos > 0`:
+    el control dispara el reproceso y NO espera el resultado — lo confirma en la
+    corrida siguiente. Sin esto, al avanzar el checkpoint quedarían fuera de vista.
+    """
+    try:
+        url, key = _get_client()
+        # El "+" del offset horario se interpreta como espacio en una query string:
+        # hay que escaparlo o PostgREST responde 400.
+        _q = lambda v: urllib.parse.quote(v, safe="")
+        ventana = (f"and(fecha_descarga.gte.{_q(desde)},fecha_descarga.lt.{_q(hasta)})"
+                   if hasta else f"fecha_descarga.gte.{_q(desde)}")
+        filtros = [
+            "jira_issue_key=is.null",
+            f"or=({ventana},reproceso_intentos.gt.0)",
+            "select=id,fecha_operacion,alyc,tipo,nro_boleto,filename,drive_file_id,reproceso_intentos",
+            "order=alyc.asc,fecha_operacion.asc,nro_boleto.asc",
+        ]
+        req = urllib.request.Request(
+            f"{url}/rest/v1/{_TABLE_BOLETOS}?" + "&".join(filtros),
+            headers={
+                "apikey":        key,
+                "Authorization": f"Bearer {key}",
+                "Accept":        "application/json",
+                "Range":         "0-9999",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return json.loads(resp.read())
+    except Exception as exc:
+        logger.warning("get_boletos_sin_jira falló: %s", exc)
+        return []
+
+
+def marcar_boleto_jira(boleto_id: str, jira_issue_key: str) -> bool:
+    """Guarda el issue de Jira que le corresponde al boleto y sella la verificación."""
+    return _patch(_TABLE_BOLETOS, boleto_id, {
+        "jira_issue_key":     jira_issue_key,
+        "jira_verificado_at": datetime.now(timezone.utc).isoformat(),
+    })
+
+
+def ultima_corrida_control() -> str | None:
+    """`hasta` de la última corrida exitosa del control, o None si nunca corrió."""
+    try:
+        url, key = _get_client()
+        req = urllib.request.Request(
+            f"{url}/rest/v1/{_TABLE_CONTROL}"
+            "?ok=is.true&select=hasta&order=hasta.desc&limit=1",
+            headers={
+                "apikey":        key,
+                "Authorization": f"Bearer {key}",
+                "Accept":        "application/json",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            filas = json.loads(resp.read())
+            return filas[0]["hasta"] if filas else None
+    except Exception as exc:
+        logger.warning("ultima_corrida_control falló: %s", exc)
+        return None
+
+
+def registrar_corrida_control(desde: str, hasta: str, revisados: int, resueltos: int,
+                              faltantes: int, omitidos: int, ok: bool = True) -> None:
+    """Deja el checkpoint para que la próxima corrida sepa desde dónde retomar."""
+    _post(_TABLE_CONTROL, {
+        "desde": desde, "hasta": hasta,
+        "revisados": revisados, "resueltos": resueltos,
+        "faltantes": faltantes, "omitidos": omitidos, "ok": ok,
+    })
+
+
+def sumar_reproceso(boleto_id: str, intentos_actuales: int) -> bool:
+    """Incrementa el contador de reprocesos disparados para ese boleto."""
+    return _patch(_TABLE_BOLETOS, boleto_id, {
+        "reproceso_intentos": (intentos_actuales or 0) + 1,
+    })
 
 
 # ── corridas (maestro) ────────────────────────────────────────────────────────

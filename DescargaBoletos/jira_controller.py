@@ -157,7 +157,11 @@ def collect_local_boletos(fecha: str) -> list[dict]:
     seen: set[tuple] = set()
 
     for alyc_dir in sorted(DOWNLOADS_DIR.iterdir()):
-        if not alyc_dir.is_dir() or alyc_dir.name not in FOLDER_TO_JIRA:
+        # Se recorren todas las carpetas de descarga: filtrar por FOLDER_TO_JIRA
+        # dejaba fuera de toda verificación a la ALyC que faltara en el mapa
+        # (le pasó a IEB durante semanas). El nombre en Jira sale del mapa más
+        # abajo, con fallback al nombre de la carpeta.
+        if not alyc_dir.is_dir():
             continue
         date_dir = alyc_dir / fecha
         if not date_dir.exists():
