@@ -1,5 +1,11 @@
 # DescargaBoletos — Contexto del Proyecto
 
+## Documentación en Confluence
+
+- **[Descarga y Procesamiento de Boletos (Cauciones, Pases, FCE)](https://meridianonorte.atlassian.net/wiki/spaces/DTM/pages/171180034)** — página principal de este proyecto (espacio DTM). **Mantenerla al día con cada cambio de scraper, webhook o flujo.**
+- [Gestión de Contraseñas de ALYCs — Secretos y Accesos](https://meridianonorte.atlassian.net/wiki/spaces/DTM/pages/136544258) — credenciales vía Key Vault / `secrets_loader.py`
+- [Listado de Usuarios y Claves](https://meridianonorte.atlassian.net/wiki/spaces/MN/pages/143753217) — la publica `refresh-creds-page`
+
 ## Objetivo
 Descargar comprobantes PDF (boletos) de **cauciones y pases** de múltiples ALYCs de forma automática, y subirlos a Google Drive organizados por tipo de operación, fecha y ALYC.
 
