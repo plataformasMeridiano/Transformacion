@@ -48,6 +48,7 @@ const WEBHOOK_SECRET = Deno.env.get("CHEQUES_SYNC_WEBHOOK_SECRET") ?? "";
 const MERIDIANO_CUIT = "30707418849";
 const PAGE_SIZE = 20;        // tope de CMF para el nodo cheques
 const MAX_INTENTOS = 5;
+const PAGINAS_EN_PARALELO = 5;
 
 // ── Jira CHEQ ──────────────────────────────────────────────────────────────────
 const PROJECT_KEY = "CHEQ";
@@ -143,18 +144,38 @@ async function cmfPagina(estado: string, pagina: number, desde?: string, hasta?:
   };
 }
 
-/** CMF devuelve páginas vacías / errores intermitentes: reintenta. */
+/**
+ * Reintenta ante páginas vacías y errores intermitentes.
+ *
+ * Distingue **"CMF contestó cero"** de **"CMF no contestó"**: si ningún intento
+ * obtuvo respuesta válida, tira. Devolver la página vacía como si el universo
+ * fuera cero hace que con CMF caído el sync responda `ok: true` y
+ * "universo vacío", y que el disparo horario informe "sin novedades" para
+ * siempre. Es el mismo modo de falla silenciosa que costó WIN, MetroCorp y
+ * Allaria: el caso real fue el 502 de CMF del 2026-08-20 12:56.
+ */
 async function cmfPaginaRetry(estado: string, pagina: number, desde?: string, hasta?: string,
                               select?: string) {
   let total: number | null = null;
+  let contesto = false;
+  let ultimoError = "";
   for (let i = 1; i <= MAX_INTENTOS; i++) {
     try {
       const r = await cmfPagina(estado, pagina, desde, hasta, select);
+      contesto = true;
       if (r.total != null) total = r.total;
       if (r.filas.length || total === 0) return { filas: r.filas, total };
-    } catch { /* reintenta */ }
+    } catch (e) {
+      ultimoError = e instanceof Error ? e.message : String(e);
+    }
     await sleep(1200 * i);
   }
+  if (!contesto) {
+    throw new Error(`CMF no contestó la página ${pagina} tras ${MAX_INTENTOS} intentos` +
+                    (ultimoError ? `: ${ultimoError}` : ""));
+  }
+  // Contestó pero la página quedó vacía con total > 0. Acá no se tira: el conteo
+  // de la ventana lo detecta, la marca INCOMPLETA y el handler devuelve 502.
   return { filas: [] as any[], total };
 }
 
@@ -173,9 +194,19 @@ async function ventana(estado: string, desde: string, hasta: string,
 
   const vistos = new Map<string, any>();
   const paginas = Math.ceil(total / PAGE_SIZE);
-  for (let p = 1; p <= paginas; p++) {
-    const { filas } = await cmfPaginaRetry(estado, p, desde, hasta);
-    for (const c of filas) if (c?.cheque_id) vistos.set(c.cheque_id, c);
+  // De a PAGINAS_EN_PARALELO. Secuencial no entra en el isolate: el barrido
+  // completo son ~63 páginas × ~1,9 s y dio 504 a los 151 s (límite 150 s).
+  // No se arregla pidiendo menos — una página tarda lo mismo trayendo solo el
+  // cheque_id que trayendo el select entero, así que el costo es latencia por
+  // request y lo único que lo baja es solaparlas.
+  for (let p = 1; p <= paginas; p += PAGINAS_EN_PARALELO) {
+    const lote = [];
+    for (let q = p; q < p + PAGINAS_EN_PARALELO && q <= paginas; q++) {
+      lote.push(cmfPaginaRetry(estado, q, desde, hasta));
+    }
+    for (const { filas } of await Promise.all(lote)) {
+      for (const c of filas) if (c?.cheque_id) vistos.set(c.cheque_id, c);
+    }
   }
   for (const [k, v] of vistos) acc.set(k, v);
 
