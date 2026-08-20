@@ -49,6 +49,7 @@ const MERIDIANO_CUIT = "30707418849";
 const PAGE_SIZE = 20;        // tope de CMF para el nodo cheques
 const MAX_INTENTOS = 5;
 const PAGINAS_EN_PARALELO = 5;
+const CLAIM_TTL_MIN = 5;     // un claim más viejo que esto es de un isolate muerto
 
 // ── Jira CHEQ ──────────────────────────────────────────────────────────────────
 const PROJECT_KEY = "CHEQ";
@@ -555,12 +556,67 @@ async function jiraCreate(fields: Record<string, unknown>) {
   }
 }
 
-/** Crea el issue padre "Cesion de Cheques" de una operación. */
+/** Busca en Jira paginando con nextPageToken. */
+async function jiraBuscar(jql: string, campos: string, tope = 5000) {
+  const out: any[] = [];
+  let token: string | null = null;
+  do {
+    const u = new URL(`${JIRA_BASE_URL}/rest/api/3/search/jql`);
+    u.searchParams.set("jql", jql);
+    u.searchParams.set("fields", campos);
+    u.searchParams.set("maxResults", "100");
+    if (token) u.searchParams.set("nextPageToken", token);
+    const r = await fetch(u, { headers: { Authorization: jiraAuth(), Accept: "application/json" } });
+    if (!r.ok) throw new Error(`Jira search ${r.status}: ${(await r.text()).slice(0, 200)}`);
+    const d = await r.json();
+    out.push(...(d.issues ?? []));
+    token = d.nextPageToken ?? null;
+  } while (token && out.length < tope);
+  return out;
+}
+
+const cfNum = (id: string) => id.replace("customfield_", "");
+
+/**
+ * Busca un padre ya creado para la operación por su **clave natural**: día de
+ * cesión + cliente. Está verificado que `(contraparte_cuit, día)` es único en las
+ * 485 operaciones, así que identifica la operación sin ambigüedad.
+ *
+ * Cubre el caso "el padre se creó en Jira pero el PATCH a Supabase no llegó":
+ * sin esto la corrida siguiente crea un SEGUNDO padre y la operación queda
+ * partida entre los dos. Pasó el 2026-08-11 con AG LIFT SA 2026-08-07, cuyos
+ * 4 cheques quedaron 2 en CHEQ-2882 y 2 en CHEQ-2883.
+ */
+async function buscarPadreExistente(op: any, clienteId: string | null) {
+  const dia = String(op.dia ?? "").slice(0, 10);
+  if (!dia) return null;
+  const candidatos = await jiraBuscar(
+    `project = ${PROJECT_KEY} AND issuetype = "Cesion de Cheques"` +
+    ` AND cf[${cfNum(CF.fechaCesion)}] = "${dia}"`,
+    `key,summary,${CF.cliente}`);
+  const nombre = String(op.contraparte_nombre ?? op.contraparte_cuit ?? "");
+  for (const c of candidatos) {
+    const cli = c.fields?.[CF.cliente];
+    const objId = Array.isArray(cli) && cli.length ? String(cli[0]?.objectId ?? "") : "";
+    // Con el Cliente resuelto se compara contra el objeto de Assets. Si la Entidad
+    // todavía no existe, se cae al nombre del summary, que la función arma siempre igual.
+    if (clienteId && objId) {
+      if (objId === String(clienteId)) return { key: c.key, id: String(c.id) };
+    } else if (nombre && String(c.fields?.summary ?? "").startsWith(`${nombre} —`)) {
+      return { key: c.key, id: String(c.id) };
+    }
+  }
+  return null;
+}
+
+/** Crea el issue padre "Cesion de Cheques" de una operación, o adopta el que ya exista. */
 async function crearPadre(op: any) {
   // El Cliente NO se crea automáticamente: las Entidades las da de alta riesgos
   // vía Pipedrive. Si falta, el padre queda sin Cliente y eso es la señal.
   const clienteId = op.cliente_asset_id ??
     (await assetObjectId(op.contraparte_cuit, OT_ENTIDADES)).objectId;
+  const yaEsta = await buscarPadreExistente(op, clienteId);
+  if (yaEsta) return { issue: yaEsta, clienteId, adoptado: true };
   const fields: Record<string, unknown> = {
     project: { key: PROJECT_KEY },
     issuetype: { id: IT_PADRE },
@@ -571,7 +627,7 @@ async function crearPadre(op: any) {
   };
   if (clienteId) fields[CF.cliente] = assetsRef(clienteId);
   const issue = await jiraCreate(fields);
-  return { issue, clienteId };
+  return { issue, clienteId, adoptado: false };
 }
 
 /** Crea el issue del cheque, colgado del padre (o suelto si parentKey es null). */
@@ -647,32 +703,66 @@ async function altaJira(maxIssues: number, dryRun: boolean) {
     }
 
     // 1. padre (si no lo tiene todavía).
-    //    Si falla, los cheques se crean igual SUELTOS y se les cuelga el padre después:
-    //    perder un cheque es peor que dejarlo sin agrupar. Hoy el workflow de
-    //    "Cesion de Cheques" tiene un validador en la transición de creación
-    //    ("no se puede Aceptar ... sin los cheques correspondientes") que mira los
-    //    hijos del propio issue — siempre 0 al crearlo — así que el alta del padre
-    //    falla hasta que ese validador se mueva a la transición Aceptar.
+    //    Si falla, los cheques se crean igual SUELTOS y se les cuelga el padre
+    //    después: perder un cheque es peor que dejarlo sin agrupar.
     let parentKey: string | null = op.jira_parent_key ?? null;
     if (!parentKey) {
-      try {
-        const { issue, clienteId } = await crearPadre(op);
-        parentKey = issue.key;
-        padres++;
-        await supa(`cheques_operaciones?id=eq.${opId}`, {
+      // CLAIM ATÓMICO. Sin esto, dos corridas concurrentes (el botón a demanda
+      // solapado con la horaria, o un lote que reintenta mientras el isolate
+      // anterior sigue vivo) leen jira_parent_key is null a la vez y crean DOS
+      // padres. Postgres serializa el UPDATE, así que de dos isolates uno se
+      // lleva la fila y el otro recibe 0 filas y no crea nada.
+      const vencido = new Date(Date.now() - CLAIM_TTL_MIN * 60_000).toISOString();
+      const tomadas: any[] = await supa(
+        `cheques_operaciones?id=eq.${opId}&jira_parent_key=is.null` +
+        `&or=(jira_parent_claim.is.null,jira_parent_claim.lt.${encodeURIComponent(vencido)})`,
+        {
           method: "PATCH",
-          body: JSON.stringify({
-            jira_parent_key: issue.key, jira_parent_id: issue.id,
-            cliente_asset_id: clienteId, fecha_procesamiento: new Date().toISOString(),
-          }),
-          headers: { Prefer: "return=minimal" },
-        });
-      } catch (e) {
-        detalle.push({
-          operacion: op.contraparte_nombre, dia: op.dia,
-          padre_error: e instanceof Error ? e.message : String(e),
-          nota: "cheques creados sin padre; reasignar cuando el workflow lo permita",
-        });
+          body: JSON.stringify({ jira_parent_claim: new Date().toISOString() }),
+          headers: { Prefer: "return=representation" },
+        }) ?? [];
+
+      if (!tomadas.length) {
+        // Otra corrida lo está creando. Se relee por si ya lo dejó escrito.
+        const [fresca] = (await supa(
+          `cheques_operaciones?select=jira_parent_key&id=eq.${opId}`)) ?? [];
+        parentKey = fresca?.jira_parent_key ?? null;
+        if (!parentKey) {
+          detalle.push({
+            operacion: op.contraparte_nombre, dia: op.dia,
+            nota: "padre en curso en otra corrida; cheques creados sueltos",
+          });
+        }
+      } else {
+        try {
+          const { issue, clienteId, adoptado } = await crearPadre(op);
+          parentKey = issue.key;
+          if (!adoptado) padres++;
+          await supa(`cheques_operaciones?id=eq.${opId}`, {
+            method: "PATCH",
+            body: JSON.stringify({
+              jira_parent_key: issue.key, jira_parent_id: issue.id,
+              cliente_asset_id: clienteId, fecha_procesamiento: new Date().toISOString(),
+            }),
+            headers: { Prefer: "return=minimal" },
+          });
+          if (adoptado) {
+            detalle.push({ operacion: op.contraparte_nombre, dia: op.dia,
+                           padre_adoptado: issue.key });
+          }
+        } catch (e) {
+          // Se suelta el claim para que el próximo ciclo reintente sin esperar el TTL.
+          await supa(`cheques_operaciones?id=eq.${opId}`, {
+            method: "PATCH",
+            body: JSON.stringify({ jira_parent_claim: null }),
+            headers: { Prefer: "return=minimal" },
+          }).catch(() => {});
+          detalle.push({
+            operacion: op.contraparte_nombre, dia: op.dia,
+            padre_error: e instanceof Error ? e.message : String(e),
+            nota: "cheques creados sin padre; se recuelgan en el próximo ciclo",
+          });
+        }
       }
     }
 
@@ -816,6 +906,33 @@ serve(async (req) => {
       if (!i.nro) continue;
       porNro.set(i.nro, [...(porNro.get(i.nro) ?? []), i.key]);
     }
+
+    // 3. LOS PADRES. Auditarlos aparte importa: el 2026-08-11 quedaron 6 padres
+    //    vacíos y 1 con hijos que Supabase no referencia, y esta auditoría no los
+    //    veía porque solo miraba issues de cheque. Un padre vacío es basura; un
+    //    padre no referenciado con hijos significa una operación PARTIDA en dos.
+    const padresJira = await jiraBuscar(
+      `project = ${PROJECT_KEY} AND issuetype = "Cesion de Cheques" ORDER BY key ASC`,
+      `key,summary,created`);
+    const hijosPorPadre = new Map<string, string[]>();
+    for (const i of enJira) {
+      if (i.parent) hijosPorPadre.set(i.parent, [...(hijosPorPadre.get(i.parent) ?? []), i.key]);
+    }
+    const refsPadre = new Set<string>();
+    for (let off = 0; ; off += 1000) {
+      const filas: any[] = await supa(
+        `cheques_operaciones?select=jira_parent_key&jira_parent_key=not.is.null` +
+        `&limit=1000&offset=${off}`);
+      for (const f of filas) refsPadre.add(f.jira_parent_key);
+      if (filas.length < 1000) break;
+    }
+    const resumenPadre = (p: any) => ({
+      key: p.key,
+      summary: String(p.fields?.summary ?? ""),
+      creado: String(p.fields?.created ?? "").slice(0, 19),
+      hijos: hijosPorPadre.get(p.key) ?? [],
+    });
+
     return json(200, {
       ok: true,
       en_jira: enJira.length,
@@ -823,6 +940,16 @@ serve(async (req) => {
       huerfanos: huerfanos.map((h) => ({
         ...h, otros_con_mismo_nro: (porNro.get(h.nro) ?? []).filter((k) => k !== h.key),
       })),
+      padres_en_jira: padresJira.length,
+      padres_referenciados_en_supabase: refsPadre.size,
+      // Sin hijos: se pueden borrar.
+      padres_vacios: padresJira.filter((p) => !(hijosPorPadre.get(p.key) ?? []).length)
+                               .map(resumenPadre),
+      // Con hijos pero fuera de la base: la operación quedó partida entre dos padres.
+      // Hay que recolgar esos hijos del padre que sí referencia Supabase.
+      padres_no_referenciados: padresJira
+        .filter((p) => !refsPadre.has(p.key) && (hijosPorPadre.get(p.key) ?? []).length)
+        .map(resumenPadre),
     });
   }
 
