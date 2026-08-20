@@ -16,8 +16,12 @@ logger = logging.getLogger(__name__)
 _TIMEOUT      = 30_000
 _PROFILE_DIR  = Path("browser_profiles/allaria")
 
-# Auth0 redirect URL (SSO entry point para Allaria)
-_URL_REDIRECT = "https://allaria.com.ar/Account/RedirectLogin"
+# Entry point del SSO. Era https://allaria.com.ar/Account/RedirectLogin (el portal
+# viejo), que el 2026-08-20 empezó a devolver 404 y a renderizar la home
+# institucional: la página nunca redirigía y el login moría esperando. El entry
+# point real es la app, que redirige sola a login.allaria.com.ar/u/login.
+# Se toma de url_login del config; esto es solo el fallback.
+_URL_REDIRECT = "https://app.allaria.com.ar/"
 _URL_APP      = "https://app.allaria.com.ar"
 _API          = "https://api.allaria.cloud"
 
@@ -39,6 +43,25 @@ _ESTADOS_EXCLUIDOS = frozenset({"REJECTED"})
 _RE_BOLETO = re.compile(r"BOLETO\s*#\s*(\d+)", re.I)
 
 _VENTANA_DIAS_DEFAULT = 45
+
+# El SSO pasa por tres URLs y distinguirlas por substring es traicionero: el punto
+# de entrada es .../Account/RedirectLogin, que en minúsculas CONTIENE "login".
+# Preguntar `"login" in url` daba verdadero en el entry point y falso con la L
+# mayúscula, así que el scraper se salteaba el formulario y después se quedaba sin
+# token. Se decide con chequeos explícitos y siempre en minúsculas.
+_ENTRY_PATH = "/account/redirectlogin"
+
+
+def _en_login(url: str) -> bool:
+    """Estamos parados en el formulario de Auth0 (no en el punto de entrada)."""
+    u = url.lower()
+    return (("/login" in u) or ("login.allaria" in u)) and _ENTRY_PATH not in u
+
+
+def _en_app(url: str) -> bool:
+    """Llegamos a la aplicación ya autenticados."""
+    u = url.lower()
+    return "app.allaria.com.ar" in u and not _en_login(url)
 
 
 class AllariaScraper(BaseScraper):
@@ -151,11 +174,20 @@ class AllariaScraper(BaseScraper):
 
         page.on("request", _capture)
 
-        logger.info("[%s] Navegando a %s", self.nombre, _URL_REDIRECT)
-        await page.goto(_URL_REDIRECT, wait_until="load", timeout=60_000)
+        entrada = self.url_login or _URL_REDIRECT
+        logger.info("[%s] Navegando a %s", self.nombre, entrada)
+        await page.goto(entrada, wait_until="load", timeout=60_000)
+
+        # El entry point redirige solo: o a la app (sesión viva en el perfil
+        # persistente) o al formulario de Auth0. Hay que esperar a que resuelva:
+        # decidir sobre la URL del propio redirect es lo que rompió el 2026-08-20.
+        try:
+            await page.wait_for_url(lambda u: _en_app(u) or _en_login(u), timeout=timeout)
+        except Exception:
+            pass
         logger.info("[%s] URL tras redirect inicial: %s", self.nombre, page.url)
 
-        if "login" in page.url:
+        if _en_login(page.url):
             logger.info("[%s] Formulario Auth0 detectado — completando credenciales", self.nombre)
             await page.fill("input[type='email'], input[name='username']", self.usuario)
             await page.fill("input[type='password']", self.contrasena)
@@ -169,10 +201,7 @@ class AllariaScraper(BaseScraper):
                 await self._completar_totp(page, timeout)
 
         try:
-            await page.wait_for_url(
-                lambda url: "allaria.com.ar" in url and "login" not in url,
-                timeout=timeout,
-            )
+            await page.wait_for_url(_en_app, timeout=timeout)
         except Exception:
             raise RuntimeError(f"[{self.nombre}] Login Auth0 no completó — URL final: {page.url}")
 
@@ -185,10 +214,10 @@ class AllariaScraper(BaseScraper):
         # La pantalla de Actividad es la que dispara las llamadas a la API; sin
         # visitarla no hay token que capturar.
         await self._ir_a_actividad(timeout)
-        logger.info("[%s] Bearer token capturado", self.nombre)
 
         if not self._bearer:
             raise RuntimeError(f"[{self.nombre}] No se pudo capturar el bearer token de {_API}")
+        logger.info("[%s] Bearer token capturado", self.nombre)
 
         logger.info("[%s] Login exitoso — comitente %s", self.nombre, self._cuenta)
         return True
@@ -219,7 +248,7 @@ class AllariaScraper(BaseScraper):
             await campo.fill(codigo)
             await page.locator("button[type='submit']").first.click()
             await page.wait_for_timeout(4000)
-            if "login" not in page.url:
+            if not _en_login(page.url):
                 logger.info("[%s] TOTP aceptado", self.nombre)
                 return
             # Un código puede quedar a caballo de la ventana de 30s: esperar la siguiente
