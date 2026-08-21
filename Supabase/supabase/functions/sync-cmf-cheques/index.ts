@@ -24,6 +24,11 @@
 //   crearJira   true → además del sync, da de alta en Jira (default false)
 //   dryRun      true → resuelve todo y no escribe nada
 //   maxIssues   tope de issues a crear en una corrida (default 50, freno de seguridad)
+//   delta       true → solo lo modificado desde la última corrida (modo del disparo
+//               horario); margenHoras (6) y topePaginas (15) lo acotan
+//   soloJira    true → alta en Jira desde Supabase, SIN tocar CMF
+//   probeJira   true → diagnóstico read-only del token de Jira
+//   auditarJira true → read-only: issues y padres que Supabase no referencia
 //
 // Env vars (Supabase Function secrets):
 //   SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY   (inyectadas)
@@ -48,8 +53,17 @@ const WEBHOOK_SECRET = Deno.env.get("CHEQUES_SYNC_WEBHOOK_SECRET") ?? "";
 const MERIDIANO_CUIT = "30707418849";
 const PAGE_SIZE = 20;        // tope de CMF para el nodo cheques
 const MAX_INTENTOS = 5;
-const PAGINAS_EN_PARALELO = 5;
+// CMF rate-limitea fuerte. Medido el 2026-08-20 sobre 15 páginas con el select
+// completo: concurrencia 2 → 14 OK / 1 rechazo; concurrencia 3 → 3 OK / 12 rechazos;
+// concurrencia 5 → 0 OK / 15 rechazos (429). El techo lo pone CMF, no nosotros.
+const PAGINAS_EN_PARALELO = 2;
 const CLAIM_TTL_MIN = 5;     // un claim más viejo que esto es de un isolate muerto
+
+// $orderby solo acepta campos de fecha. fecha_ult_modif además es casi única
+// (1307 valores distintos en 1308 cheques, empate máximo 2), así que como clave
+// de orden no sufre el solapamiento de páginas que sí tiene fecha_pago.
+const ORDEN_PAGO = "cheques.fecha_pago!";
+const ORDEN_MODIF = "cheques.fecha_ult_modif!";
 
 // ── Jira CHEQ ──────────────────────────────────────────────────────────────────
 const PROJECT_KEY = "CHEQ";
@@ -117,7 +131,7 @@ function safeEqual(a: string, b: string) {
 // ── CMF ────────────────────────────────────────────────────────────────────────
 
 async function cmfPagina(estado: string, pagina: number, desde?: string, hasta?: string,
-                         select?: string) {
+                         select?: string, orderby: string = ORDEN_PAGO) {
   const cond = [
     `cheques.tenencia.beneficiario_documento eq __${MERIDIANO_CUIT}__`,
     `cheques.estado eq __${estado}__`,
@@ -131,11 +145,18 @@ async function cmfPagina(estado: string, pagina: number, desde?: string, hasta?:
     body: JSON.stringify({
       select: select ?? SELECT,
       filter: cond.join(" and "),
-      orderby: "cheques.fecha_pago!",     // $orderby SOLO acepta fechas
+      orderby,
       pag: `cheques:${pagina}-${PAGE_SIZE}`,
     }),
   });
   const body = await res.json().catch(() => ({}));
+  // El 429 de CMF viene con el body VACÍO, así que sin este chequeo explícito cae
+  // en el error genérico como "CMF null: null" y parece que CMF se cayó.
+  if (body?.cmf_status === 429) {
+    const e = new Error(`CMF 429 (rate limit) en la página ${pagina}`);
+    (e as any).rateLimit = true;
+    throw e;
+  }
   if (body?.cmf_code !== "2400") {
     throw new Error(`CMF ${body?.cmf_code}: ${String(body?.cmf_description).slice(0, 200)}`);
   }
@@ -156,20 +177,24 @@ async function cmfPagina(estado: string, pagina: number, desde?: string, hasta?:
  * Allaria: el caso real fue el 502 de CMF del 2026-08-20 12:56.
  */
 async function cmfPaginaRetry(estado: string, pagina: number, desde?: string, hasta?: string,
-                              select?: string) {
+                              select?: string, orderby: string = ORDEN_PAGO) {
   let total: number | null = null;
   let contesto = false;
   let ultimoError = "";
   for (let i = 1; i <= MAX_INTENTOS; i++) {
+    let esperar = 1200 * i;
     try {
-      const r = await cmfPagina(estado, pagina, desde, hasta, select);
+      const r = await cmfPagina(estado, pagina, desde, hasta, select, orderby);
       contesto = true;
       if (r.total != null) total = r.total;
       if (r.filas.length || total === 0) return { filas: r.filas, total };
     } catch (e) {
       ultimoError = e instanceof Error ? e.message : String(e);
+      // Ante rate limit hay que aflojar de verdad: reintentar rápido lo empeora,
+      // porque el reintento cuenta contra la misma cuota que ya se pasó.
+      if ((e as any)?.rateLimit) esperar = 4000 * i;
     }
-    await sleep(1200 * i);
+    await sleep(esperar);
   }
   if (!contesto) {
     throw new Error(`CMF no contestó la página ${pagina} tras ${MAX_INTENTOS} intentos` +
@@ -227,6 +252,62 @@ async function ventana(estado: string, desde: string, hasta: string,
   const sig = new Date(medio.getTime() + 86400000);
   await ventana(estado, desde, f(medio), acc, log, prof + 1);
   await ventana(estado, f(sig), hasta, acc, log, prof + 1);
+}
+
+/** Última modificación que ya tenemos cargada. Es la marca de agua del delta. */
+async function marcaDeAgua(): Promise<string | null> {
+  const filas: any[] = await supa(
+    "procesamiento_cheques?select=fecha_ult_modif&fecha_ult_modif=not.is.null" +
+    "&order=fecha_ult_modif.desc&limit=1");
+  return filas?.[0]?.fecha_ult_modif ?? null;
+}
+
+/**
+ * Modo DELTA: lo que cambió desde la última corrida. Es el camino del disparo
+ * horario, y el que hace que el sync entre cómodo en los 150 s del isolate.
+ *
+ * CMF **no deja filtrar** por fecha_ult_modif (`$filter` da 2499 campo
+ * incorrecto), pero **sí deja ordenar** por ese campo. Así que en vez de
+ * "traeme lo nuevo" se pide todo ordenado por última modificación descendente y
+ * se corta al cruzar la marca de agua: en una corrida horaria son 1 o 2 páginas
+ * en lugar de las ~63 del barrido completo.
+ *
+ * El margen hacia atrás cubre que la marca de agua se guarda por cheque y no por
+ * corrida; releer de más no cuesta nada porque el upsert es idempotente. Lo que
+ * sí importa es no leer de menos.
+ */
+async function traerDelta(estado: string, margenHoras: number, topePaginas: number) {
+  const acc = new Map<string, any>();
+  const log: string[] = [];
+  const marca = await marcaDeAgua();
+  const corteMs = marca ? Date.parse(marca) - margenHoras * 3600_000 : null;
+  log.push(`marca de agua: ${marca ?? "(base vacía)"}` +
+           (corteMs ? ` | corte: ${new Date(corteMs).toISOString()} (margen ${margenHoras} h)` : ""));
+
+  let alcanzado = false;
+  for (let p = 1; p <= topePaginas; p++) {
+    const { filas } = await cmfPaginaRetry(estado, p, undefined, undefined, undefined, ORDEN_MODIF);
+    if (!filas.length) {
+      log.push(`pag ${p}: vacía, se acabó el universo`);
+      alcanzado = true;
+      break;
+    }
+    for (const c of filas) if (c?.cheque_id) acc.set(c.cheque_id, c);
+    const ultima = aHoraArg(filas[filas.length - 1]?.fecha_ult_modif);
+    const ultimaMs = ultima ? Date.parse(ultima) : NaN;
+    log.push(`pag ${p}: ${filas.length} filas, hasta ${String(ultima).slice(0, 19)}`);
+    if (corteMs != null && Number.isFinite(ultimaMs) && ultimaMs < corteMs) {
+      log.push(`corte alcanzado en la página ${p}`);
+      alcanzado = true;
+      break;
+    }
+  }
+  // Sin marca de agua (base vacía) no hay con qué cortar: lo que se trajo es un
+  // recorte arbitrario del universo, no un delta.
+  if (!marca) log.push("DELTA SIN MARCA: la base está vacía, correr el barrido completo");
+  else if (!alcanzado) log.push(`DELTA INCOMPLETO: se agotaron las ${topePaginas} páginas sin llegar al corte`);
+  return { cheques: [...acc.values()], total: acc.size, log,
+           deltaIncompleto: !alcanzado || !marca };
 }
 
 async function traerTodos(estado: string, desde?: string, hasta?: string) {
@@ -398,6 +479,7 @@ function cabecera(c: any) {
       monto: c.monto ?? null,
       fecha_emision: String(c.fecha_emision ?? "").slice(0, 10) || null,
       fecha_pago: String(c.fecha_pago ?? "").slice(0, 10) || null,
+      fecha_ult_modif: aHoraArg(c.fecha_ult_modif),
       fecha_ingreso: ing ? aHoraArg(ing.fecha) : (directo ? ingresoDirecto(c.fecha_emision) : null),
       via_ingreso: ing ? ing.tipo : (directo ? "DIRECTO" : null),
       contraparte_nombre: ing ? ing.origen_nombre : (directo ? txt(ce.emisor_razon_social) : null),
@@ -814,6 +896,11 @@ serve(async (req) => {
   const crearJira = p("crearJira") === true || p("crearJira") === "true";
   const dryRun = p("dryRun") === true || p("dryRun") === "true";
   const maxIssues = Number(p("maxIssues") ?? 50);
+  // delta = solo lo modificado desde la última corrida. Es el modo del disparo
+  // horario; el barrido completo queda para backfills y para poblar de cero.
+  const delta = p("delta") === true || p("delta") === "true";
+  const margenHoras = Number(p("margenHoras") ?? 6);
+  const topePaginas = Number(p("topePaginas") ?? 15);
 
   // Diagnóstico read-only del token de Jira que hay en los secrets: hasta dónde llega.
   // No devuelve el token, solo su prefijo y largo. Sirve para saber si esta cuenta puede
@@ -973,7 +1060,11 @@ serve(async (req) => {
   const t0 = Date.now();
   try {
     // 1-2. traer de CMF y derivar
-    const { cheques, total, log } = await traerTodos(estado, desde, hasta);
+    const traido = delta
+      ? await traerDelta(estado, margenHoras, topePaginas)
+      : await traerTodos(estado, desde, hasta);
+    const { cheques, total, log } = traido;
+    const deltaIncompleto = (traido as { deltaIncompleto?: boolean }).deltaIncompleto === true;
     const cabeceras: any[] = [];
     const eslabonFilas: any[] = [];
     for (const c of cheques) {
@@ -993,8 +1084,13 @@ serve(async (req) => {
 
     const incompleto = log.some((l) => l.includes("INCOMPLETA"));
     const resumen: Record<string, unknown> = {
-      estado, cmf_total: total, traidos: cabeceras.length, eslabones: eslabonFilas.length,
+      estado, modo: delta ? "delta" : "completo",
+      cmf_total: total, traidos: cabeceras.length, eslabones: eslabonFilas.length,
       ventanas: log, paginacion_incompleta: incompleto,
+      // Un delta incompleto NO frena la escritura: lo que se trajo es correcto y
+      // el upsert es idempotente. Pero hay que verlo, porque significa que puede
+      // haber quedado algo sin mirar y conviene disparar el barrido completo.
+      ...(delta ? { delta_incompleto: deltaIncompleto } : {}),
     };
 
     if (dryRun) {
