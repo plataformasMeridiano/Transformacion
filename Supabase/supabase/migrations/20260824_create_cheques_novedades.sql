@@ -62,5 +62,8 @@ insert into cheques_novedades_webhooks (tipo, url, activo, descripcion) values
    'Devolucion del endoso en curso. NO mueve el issue: es transitorio y puede volver a ACTIVO.'),
   ('REPUDIADO', '', false,
    'El beneficiario rechazo el echeq. NO mueve el issue: son cheques que emitimos nosotros, '
-   'no cartera.')
+   'no cartera.'),
+  ('SALIO_DE_CARTERA', '', false,
+   'Endoso nuestro a un tercero que NO es Caja de Valores: el cheque se fue de la cartera '
+   'pero no se vendio (tipicamente se le pago a un proveedor con el). NO mueve el issue.')
 on conflict (tipo) do nothing;
