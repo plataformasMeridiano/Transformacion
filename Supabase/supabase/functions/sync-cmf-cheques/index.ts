@@ -29,6 +29,9 @@
 //   soloJira    true → alta en Jira desde Supabase, SIN tocar CMF
 //   probeJira   true → diagnóstico read-only del token de Jira
 //   auditarJira true → read-only: issues y padres que Supabase no referencia
+//   sinEstado   true → mira toda la tenencia sin filtrar por estado (para novedades)
+//   enviarNovedades true → solo drena la cola de novedades pendientes
+//   repesca     true → barrido completo para detectar los que se fueron de la tenencia
 //
 // Env vars (Supabase Function secrets):
 //   SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY   (inyectadas)
@@ -64,6 +67,26 @@ const CLAIM_TTL_MIN = 5;     // un claim más viejo que esto es de un isolate mu
 // de orden no sufre el solapamiento de páginas que sí tiene fecha_pago.
 const ORDEN_PAGO = "cheques.fecha_pago!";
 const ORDEN_MODIF = "cheques.fecha_ult_modif!";
+
+// Estado de COELSA -> tipo de novedad. Los tres últimos se registran igual, pero
+// NO mueven el issue: la decisión de qué transición corresponde vive en Jira, y
+// para esos tres no hay ninguna que sea correcta sin mirarlos a mano.
+//   CADUCADO             se venció la ventana de 31 días; ambiguo entre garantía,
+//                        precancelado y depósito que se pasó.
+//   DEVOLUCION-PENDIENTE devolución del endoso en curso; puede volver a ACTIVO.
+//   REPUDIADO            cheques que emitimos nosotros y rebotaron; no son cartera.
+const TIPO_POR_ESTADO: Record<string, string> = {
+  DEPOSITADO: "DEPOSITADO",
+  PAGADO: "ACREDITADO",
+  RECHAZADO: "RECHAZADO",
+  CADUCADO: "CADUCADO",
+  "DEVOLUCION-PENDIENTE": "DEVOLUCION_PENDIENTE",
+  REPUDIADO: "REPUDIADO",
+};
+
+// Estados desde los que un cheque todavía puede cambiar. Son los que hay que
+// seguir mirando, y los únicos que vale la pena repescar si se van de la tenencia.
+const ESTADOS_NO_FINALES = ["ACTIVO", "DEPOSITADO", "DEVOLUCION-PENDIENTE"];
 
 // ── Jira CHEQ ──────────────────────────────────────────────────────────────────
 const PROJECT_KEY = "CHEQ";
@@ -130,12 +153,14 @@ function safeEqual(a: string, b: string) {
 
 // ── CMF ────────────────────────────────────────────────────────────────────────
 
-async function cmfPagina(estado: string, pagina: number, desde?: string, hasta?: string,
+async function cmfPagina(estado: string | null, pagina: number, desde?: string, hasta?: string,
                          select?: string, orderby: string = ORDEN_PAGO) {
+  // estado null = toda la tenencia sin filtrar. Es lo que necesita el delta de
+  // novedades: filtrando por ACTIVO nunca veríamos el cambio a DEPOSITADO.
   const cond = [
     `cheques.tenencia.beneficiario_documento eq __${MERIDIANO_CUIT}__`,
-    `cheques.estado eq __${estado}__`,
   ];
+  if (estado) cond.push(`cheques.estado eq __${estado}__`);
   if (desde) cond.push(`cheques.fecha_pago ge ${desde}`);
   if (hasta) cond.push(`cheques.fecha_pago le ${hasta}`);
 
@@ -176,7 +201,7 @@ async function cmfPagina(estado: string, pagina: number, desde?: string, hasta?:
  * siempre. Es el mismo modo de falla silenciosa que costó WIN, MetroCorp y
  * Allaria: el caso real fue el 502 de CMF del 2026-08-20 12:56.
  */
-async function cmfPaginaRetry(estado: string, pagina: number, desde?: string, hasta?: string,
+async function cmfPaginaRetry(estado: string | null, pagina: number, desde?: string, hasta?: string,
                               select?: string, orderby: string = ORDEN_PAGO) {
   let total: number | null = null;
   let contesto = false;
@@ -213,7 +238,7 @@ async function cmfPaginaRetry(estado: string, pagina: number, desde?: string, ha
  * (1241 de 1255 en la prueba). Si la ventana no cierra, se parte al medio: con
  * menos páginas el solapamiento desaparece.
  */
-async function ventana(estado: string, desde: string, hasta: string,
+async function ventana(estado: string | null, desde: string, hasta: string,
                        acc: Map<string, any>, log: string[], prof = 0): Promise<void> {
   const { total } = await cmfPaginaRetry(estado, 1, desde, hasta, "cheques.cheque_id");
   if (!total) return;
@@ -276,7 +301,7 @@ async function marcaDeAgua(): Promise<string | null> {
  * corrida; releer de más no cuesta nada porque el upsert es idempotente. Lo que
  * sí importa es no leer de menos.
  */
-async function traerDelta(estado: string, margenHoras: number, topePaginas: number) {
+async function traerDelta(estado: string | null, margenHoras: number, topePaginas: number) {
   const acc = new Map<string, any>();
   const log: string[] = [];
   const marca = await marcaDeAgua();
@@ -310,7 +335,7 @@ async function traerDelta(estado: string, margenHoras: number, topePaginas: numb
            deltaIncompleto: !alcanzado || !marca };
 }
 
-async function traerTodos(estado: string, desde?: string, hasta?: string) {
+async function traerTodos(estado: string | null, desde?: string, hasta?: string) {
   const acc = new Map<string, any>();
   const log: string[] = [];
 
@@ -761,7 +786,12 @@ async function altaJira(maxIssues: number, dryRun: boolean) {
   const pendientes: any[] = await supa(
     "procesamiento_cheques?select=id,cheque_id,cheque_numero,tipo,monto,moneda,librador," +
     "librador_cuit,banco_codigo,cuenta_emisora,sucursal,no_a_la_orden,fecha_emision,fecha_pago," +
+    // jira_issue_key is.null es una GUARDA, no un adorno: sin eso, si algún día se
+    // resetea fecha_procesamiento en un update (que es lo que hace el patrón de la
+    // casa en sync-invoitrade-echeq-novedades) estas filas se re-crearían como
+    // issues nuevos y tendríamos duplicados.
     "estado,operacion_id&fecha_procesamiento=is.null&operacion_id=not.is.null" +
+    "&jira_issue_key=is.null" +
     `&order=fecha_ingreso.asc&limit=${maxIssues}`);
   if (!pendientes.length) return { creados: 0, padres: 0, detalle: [] as unknown[] };
 
@@ -872,6 +902,214 @@ async function altaJira(maxIssues: number, dryRun: boolean) {
   return { creados, padres, detalle };
 }
 
+// ── novedades ────────────────────────────────────────────────────────────────
+//
+// La función es un SENSOR: detecta el cambio de estado, lo registra y dispara un
+// webhook por tipo. NO transiciona el issue. Del otro lado hay una automation de
+// Jira por tipo, así la lógica de qué transición corresponde vive junto al
+// workflow y se cambia sin redeployar.
+
+type Novedad = {
+  cheque_id: string; cheque_numero: string | null; jira_issue_key: string | null;
+  tipo: string; estado_anterior: string | null; estado_nuevo: string | null;
+  detalle: Record<string, unknown>;
+};
+
+/**
+ * Compara lo que trajo CMF contra lo que ya tenemos.
+ *
+ * TIENE que correr ANTES del upsert: el upsert pisa `estado`, y después del pisón
+ * ya no hay contra qué comparar.
+ *
+ * Un cheque que no está en la base todavía no es novedad — es un alta, y de eso se
+ * ocupa altaJira.
+ */
+async function detectarNovedades(cabeceras: any[],
+                                 eslabonesPorCheque: Map<string, Eslabon[]>): Promise<Novedad[]> {
+  if (!cabeceras.length) return [];
+  const previos = new Map<string, any>();
+  const ids = cabeceras.map((c) => c.cheque_id).filter(Boolean);
+  for (let i = 0; i < ids.length; i += 200) {
+    const lote = ids.slice(i, i + 200);
+    const filas: any[] = await supa(
+      `procesamiento_cheques?select=cheque_id,estado_norm,jira_issue_key` +
+      `&cheque_id=in.(${lote.join(",")})`);
+    for (const f of filas ?? []) previos.set(f.cheque_id, f);
+  }
+
+  const out: Novedad[] = [];
+  for (const c of cabeceras) {
+    const prev = previos.get(c.cheque_id);
+    if (!prev) continue;                                   // alta, no novedad
+    const base = {
+      cheque_id: c.cheque_id, cheque_numero: c.cheque_numero,
+      jira_issue_key: prev.jira_issue_key ?? null,
+      detalle: { monto: c.monto, fecha_pago: c.fecha_pago, librador: c.librador,
+                 contraparte: c.contraparte_nombre } as Record<string, unknown>,
+    };
+
+    if (prev.estado_norm !== c.estado_norm) {
+      const tipo = TIPO_POR_ESTADO[String(c.estado_norm ?? "")];
+      // ACTIVO no genera novedad: es el estado de reposo, no un evento.
+      if (tipo) {
+        out.push({ ...base, tipo, estado_anterior: prev.estado_norm,
+                   estado_nuevo: c.estado_norm });
+      }
+    }
+
+    // VENDIDO no es un estado de COELSA: se deduce de la cadena. Si hay un eslabón
+    // NUESTRO hacia un tercero que no es el depósito, lo negociamos.
+    const salida = (eslabonesPorCheque.get(c.cheque_id) ?? []).find(
+      (e) => e.origen_cuit === MERIDIANO_CUIT && e.destino_cuit !== MERIDIANO_CUIT &&
+             !e.es_deposito && (e.estado_norm === "ACEPTADO" || e.estado_norm === ""));
+    if (salida) {
+      out.push({ ...base, tipo: "VENDIDO", estado_anterior: prev.estado_norm,
+                 estado_nuevo: c.estado_norm,
+                 detalle: { ...base.detalle, comprador: salida.destino_nombre,
+                            comprador_cuit: salida.destino_cuit, fecha: salida.fecha } });
+    }
+  }
+  return out;
+}
+
+/** Registra las novedades. El unique (cheque_id, tipo) hace que reprocesar no duplique. */
+async function registrarNovedades(novedades: Novedad[]) {
+  if (!novedades.length) return 0;
+  let nuevas = 0;
+  for (let i = 0; i < novedades.length; i += 200) {
+    const filas = await supa("cheques_novedades?on_conflict=cheque_id,tipo", {
+      method: "POST",
+      body: JSON.stringify(novedades.slice(i, i + 200)),
+      headers: { Prefer: "resolution=ignore-duplicates,return=representation" },
+    });
+    nuevas += (filas ?? []).length;
+  }
+  return nuevas;
+}
+
+/**
+ * Drena la cola: por cada novedad pendiente con webhook activo, POST y marca.
+ *
+ * Un tipo sin URL o con activo=false se deja pendiente a propósito — así se prende
+ * de a un tipo por vez sin perder las novedades de los demás.
+ */
+async function enviarNovedades(tope: number) {
+  const destinos = new Map<string, string>();
+  for (const w of (await supa("cheques_novedades_webhooks?select=tipo,url,activo")) ?? []) {
+    if (w.activo && w.url) destinos.set(w.tipo, w.url);
+  }
+  if (!destinos.size) {
+    return { enviadas: 0, fallidas: 0, sin_destino: 0, detalle: [] as unknown[] };
+  }
+
+  const pendientes: any[] = await supa(
+    `cheques_novedades?select=*&enviado_at=is.null&order=detectado_at.asc&limit=${tope}`) ?? [];
+
+  const detalle: unknown[] = [];
+  let enviadas = 0, fallidas = 0, sinDestino = 0;
+  for (const n of pendientes) {
+    const url = destinos.get(n.tipo);
+    if (!url) { sinDestino++; continue; }
+    let status = 0, error = "";
+    try {
+      const r = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          issueKey: n.jira_issue_key, chequeId: n.cheque_id, chequeNumero: n.cheque_numero,
+          tipo: n.tipo, estadoAnterior: n.estado_anterior, estadoNuevo: n.estado_nuevo,
+          detalle: n.detalle,
+          // Jira automation toma el issue del array `issues` del incoming webhook.
+          issues: n.jira_issue_key ? [n.jira_issue_key] : [],
+        }),
+      });
+      status = r.status;
+      await r.body?.cancel();
+    } catch (e) {
+      error = e instanceof Error ? e.message : String(e);
+    }
+    const ok = status >= 200 && status < 300;
+    await supa(`cheques_novedades?id=eq.${n.id}`, {
+      method: "PATCH",
+      body: JSON.stringify({
+        enviado_at: ok ? new Date().toISOString() : null,
+        intentos: (n.intentos ?? 0) + 1,
+        http_status: status || null,
+        error_msg: ok ? null : (error || `HTTP ${status}`),
+      }),
+      headers: { Prefer: "return=minimal" },
+    });
+    if (ok) enviadas++; else fallidas++;
+    detalle.push({ id: n.id, tipo: n.tipo, issue: n.jira_issue_key, status,
+                   error: error || undefined });
+  }
+  return { enviadas, fallidas, sin_destino: sinDestino, detalle };
+}
+
+/** Un cheque puntual, sin filtrar por tenencia. Es la única forma de ver los que se fueron. */
+async function cmfPorChequeId(chequeId: string) {
+  const res = await fetch(CMF_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "x-internal-key": CMF_KEY },
+    body: JSON.stringify({
+      select: SELECT,
+      filter: `cheques.cheque_id eq __${chequeId}__`,
+      orderby: ORDEN_MODIF,
+      pag: "cheques:1-1",
+    }),
+  });
+  const body = await res.json().catch(() => ({}));
+  if (body?.cmf_code !== "2400") return null;
+  return (body?.data?.cheques ?? [])[0] ?? null;
+}
+
+/**
+ * REPESCA: los cheques que se fueron de nuestra tenencia.
+ *
+ * Un cheque negociado deja de estar en la tenencia y por lo tanto desaparece del
+ * delta — no genera novedad, simplemente se esfuma. Para verlos hay que barrer los
+ * ids de la tenencia y comparar contra los nuestros que siguen en estado no final.
+ *
+ * Se barre ordenando por fecha_ult_modif (casi única) y NO por fecha_pago: con
+ * fecha_pago las páginas se solapan y los faltantes serían falsos positivos.
+ *
+ * No va en el ciclo de 15 min: es un barrido completo. Corre una vez por día.
+ */
+async function repesca(topeConsultas: number) {
+  const enTenencia = new Set<string>();
+  const log: string[] = [];
+  for (let p = 1; p <= 400; p++) {
+    const { filas } = await cmfPaginaRetry(null, p, undefined, undefined,
+                                           "cheques.cheque_id", ORDEN_MODIF);
+    if (!filas.length) break;
+    for (const c of filas) if (c?.cheque_id) enTenencia.add(c.cheque_id);
+  }
+  log.push(`tenencia: ${enTenencia.size} cheques`);
+
+  const nuestros: any[] = await supa(
+    `procesamiento_cheques?select=cheque_id,cheque_numero,estado_norm,jira_issue_key` +
+    `&estado_norm=in.(${ESTADOS_NO_FINALES.map((e) => `"${e}"`).join(",")})`) ?? [];
+  const faltantes = nuestros.filter((n) => !enTenencia.has(n.cheque_id));
+  log.push(`nuestros no finales: ${nuestros.length} | fuera de la tenencia: ${faltantes.length}`);
+
+  const novedades: Novedad[] = [];
+  for (const f of faltantes.slice(0, topeConsultas)) {
+    const c = await cmfPorChequeId(f.cheque_id);
+    if (!c) { log.push(`${f.cheque_numero}: CMF no lo devuelve`); continue; }
+    const { fila, eslabones } = cabecera(c);
+    const [n] = await detectarNovedades([fila], new Map([[fila.cheque_id, eslabones]]));
+    if (n) novedades.push(n);
+    else log.push(`${f.cheque_numero}: fuera de la tenencia pero sin novedad que registrar`);
+  }
+  const nuevas = await registrarNovedades(novedades);
+  return {
+    fuera_de_tenencia: faltantes.length,
+    consultados: Math.min(faltantes.length, topeConsultas),
+    novedades: novedades.length, nuevas, log,
+  };
+}
+
+
 // ── handler ────────────────────────────────────────────────────────────────────
 
 serve(async (req) => {
@@ -901,6 +1139,10 @@ serve(async (req) => {
   const delta = p("delta") === true || p("delta") === "true";
   const margenHoras = Number(p("margenHoras") ?? 6);
   const topePaginas = Number(p("topePaginas") ?? 15);
+  // sinEstado = mirar TODA la tenencia sin filtrar por estado. Es obligatorio para
+  // novedades: filtrando por ACTIVO nunca veríamos el pase a DEPOSITADO.
+  const sinEstado = p("sinEstado") === true || p("sinEstado") === "true";
+  const topeNovedades = Number(p("topeNovedades") ?? 100);
 
   // Diagnóstico read-only del token de Jira que hay en los secrets: hasta dónde llega.
   // No devuelve el token, solo su prefijo y largo. Sirve para saber si esta cuenta puede
@@ -1040,6 +1282,23 @@ serve(async (req) => {
     });
   }
 
+  // Drena la cola de novedades sin volver a consultar CMF. Sirve para reintentar
+  // los envíos fallidos y para prender un tipo de webhook nuevo sobre lo ya detectado.
+  if (p("enviarNovedades") === true || p("enviarNovedades") === "true") {
+    const t = Date.now();
+    const envio = await enviarNovedades(topeNovedades);
+    return json(200, { ok: true, enviarNovedades: true, ...envio, ms: Date.now() - t });
+  }
+
+  // Los cheques que se fueron de la tenencia (negociados). Barrido completo:
+  // corre una vez por día, NO en el ciclo de 15 min.
+  if (p("repesca") === true || p("repesca") === "true") {
+    if (!CMF_KEY) return json(500, { ok: false, error: "Falta env var CMF_INTERNAL_KEY" });
+    const t = Date.now();
+    const r = await repesca(Number(p("topeConsultas") ?? 25));
+    return json(200, { ok: true, repesca: true, ...r, ms: Date.now() - t });
+  }
+
   // Alta en Jira desde lo que ya está en Supabase, SIN tocar CMF.
   // Es el camino de la carga inicial y el de reintentar sin re-sincronizar.
   if (p("soloJira") === true || p("soloJira") === "true") {
@@ -1060,16 +1319,19 @@ serve(async (req) => {
   const t0 = Date.now();
   try {
     // 1-2. traer de CMF y derivar
+    const estadoFiltro = sinEstado ? null : estado;
     const traido = delta
-      ? await traerDelta(estado, margenHoras, topePaginas)
-      : await traerTodos(estado, desde, hasta);
+      ? await traerDelta(estadoFiltro, margenHoras, topePaginas)
+      : await traerTodos(estadoFiltro, desde, hasta);
     const { cheques, total, log } = traido;
     const deltaIncompleto = (traido as { deltaIncompleto?: boolean }).deltaIncompleto === true;
     const cabeceras: any[] = [];
     const eslabonFilas: any[] = [];
+    const eslabonesPorCheque = new Map<string, Eslabon[]>();
     for (const c of cheques) {
       const { fila, eslabones } = cabecera(c);
       cabeceras.push(fila);
+      eslabonesPorCheque.set(fila.cheque_id, eslabones);
       for (const e of eslabones) {
         eslabonFilas.push({
           cheque_id: fila.cheque_id, cmc7: fila.cmc7, tipo: e.tipo, orden: e.orden,
@@ -1084,7 +1346,7 @@ serve(async (req) => {
 
     const incompleto = log.some((l) => l.includes("INCOMPLETA"));
     const resumen: Record<string, unknown> = {
-      estado, modo: delta ? "delta" : "completo",
+      estado: estadoFiltro ?? "(todos)", modo: delta ? "delta" : "completo",
       cmf_total: total, traidos: cabeceras.length, eslabones: eslabonFilas.length,
       ventanas: log, paginacion_incompleta: incompleto,
       // Un delta incompleto NO frena la escritura: lo que se trajo es correcto y
@@ -1093,12 +1355,26 @@ serve(async (req) => {
       ...(delta ? { delta_incompleto: deltaIncompleto } : {}),
     };
 
+    // NOVEDADES. Detectar es solo lectura, así que corre también en dryRun: sirve
+    // para ver qué se registraría antes de habilitarlo. Comparar TIENE que pasar
+    // antes del upsert, porque el upsert pisa `estado`.
+    const novedades = await detectarNovedades(cabeceras, eslabonesPorCheque);
+    resumen.novedades_detectadas = novedades.length;
+    resumen.novedades = novedades.map((n) => ({
+      tipo: n.tipo, issue: n.jira_issue_key, cheque: n.cheque_numero,
+      de: n.estado_anterior, a: n.estado_nuevo,
+    }));
+
     if (dryRun) {
       resumen.dryRun = true;
       if (crearJira) resumen.jira = await altaJira(maxIssues, true);
       resumen.ms = Date.now() - t0;
       return json(200, { ok: true, ...resumen });
     }
+
+    // Se registran ANTES del upsert: si el upsert falla, la novedad ya quedó
+    // anotada. Es idempotente por el unique (cheque_id, tipo).
+    resumen.novedades_nuevas = await registrarNovedades(novedades);
 
     // No escribir si la paginación no cerró: mejor no sincronizar que sincronizar a medias
     if (incompleto) {
@@ -1118,7 +1394,10 @@ serve(async (req) => {
     });
     resumen.operaciones = agrupacion;
 
-    // 5. alta en Jira (detrás del flag)
+    // 5. drenar la cola de novedades (los tipos sin webhook activo quedan pendientes)
+    resumen.envio_novedades = await enviarNovedades(topeNovedades);
+
+    // 6. alta en Jira (detrás del flag)
     resumen.jira = crearJira ? await altaJira(maxIssues, false) : "omitido (crearJira=false)";
     resumen.ms = Date.now() - t0;
     return json(200, { ok: true, ...resumen });
