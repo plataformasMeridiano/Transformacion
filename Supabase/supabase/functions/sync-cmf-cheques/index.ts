@@ -77,6 +77,12 @@ const ORDEN_MODIF = "cheques.fecha_ult_modif!";
 //   REPUDIADO            cheques que emitimos nosotros y rebotaron; no son cartera.
 const TIPO_POR_ESTADO: Record<string, string> = {
   DEPOSITADO: "DEPOSITADO",
+  // PRESENTADO es la etapa siguiente del clearing (depositado -> presentado al banco
+  // girado -> pagado/rechazado) y para Jira es el mismo estado de negocio. Medido:
+  // 50/50 con cbu_deposito y vencidos, igual que DEPOSITADO. Mapean al mismo tipo, y
+  // como el unique es (cheque_id, tipo) el cheque genera UNA sola novedad aunque pase
+  // por los dos.
+  PRESENTADO: "DEPOSITADO",
   PAGADO: "ACREDITADO",
   RECHAZADO: "RECHAZADO",
   CADUCADO: "CADUCADO",
@@ -86,7 +92,11 @@ const TIPO_POR_ESTADO: Record<string, string> = {
 
 // Estados desde los que un cheque todavía puede cambiar. Son los que hay que
 // seguir mirando, y los únicos que vale la pena repescar si se van de la tenencia.
-const ESTADOS_NO_FINALES = ["ACTIVO", "DEPOSITADO", "DEVOLUCION-PENDIENTE"];
+// OJO: esta lista NO es cerrada. El 2026-08-14 los estados sumaban exacto el total
+// con 7 valores y PRESENTADO no existía; apareció el 25/08 con 50 cheques. Un estado
+// desconocido que llegue acá se trata como final y el cheque se descarta como
+// historia, así que conviene revisar `descartados_historia` cuando salta.
+const ESTADOS_NO_FINALES = ["ACTIVO", "DEPOSITADO", "PRESENTADO", "DEVOLUCION-PENDIENTE"];
 
 // ── Jira CHEQ ──────────────────────────────────────────────────────────────────
 const PROJECT_KEY = "CHEQ";
@@ -956,11 +966,8 @@ type Novedad = {
  * Un cheque que no está en la base todavía no es novedad — es un alta, y de eso se
  * ocupa altaJira.
  */
-async function detectarNovedades(cabeceras: any[],
-                                 eslabonesPorCheque: Map<string, Eslabon[]>): Promise<Novedad[]> {
-  if (!cabeceras.length) return [];
+async function previosDe(ids: string[]): Promise<Map<string, any>> {
   const previos = new Map<string, any>();
-  const ids = cabeceras.map((c) => c.cheque_id).filter(Boolean);
   for (let i = 0; i < ids.length; i += 200) {
     const lote = ids.slice(i, i + 200);
     const filas: any[] = await supa(
@@ -968,7 +975,23 @@ async function detectarNovedades(cabeceras: any[],
       `&cheque_id=in.(${lote.join(",")})`);
     for (const f of filas ?? []) previos.set(f.cheque_id, f);
   }
+  return previos;
+}
 
+/**
+ * Un cheque que NO conocemos y que YA viene en estado final nunca pasó por nuestra
+ * cartera: es historia de COELSA que arrastra el barrido sin filtro de estado.
+ * Guardarlo solo ensucia la tabla y le genera una operación que jamás va a tener
+ * padre en Jira (el 2026-08-25 entraron 127 cheques y 62 operaciones así).
+ */
+const esCartera = (fila: any, previos: Map<string, any>) =>
+  previos.has(fila.cheque_id) ||
+  ESTADOS_NO_FINALES.includes(String(fila.estado_norm ?? ""));
+
+async function detectarNovedades(cabeceras: any[],
+                                 eslabonesPorCheque: Map<string, Eslabon[]>,
+                                 previos: Map<string, any>): Promise<Novedad[]> {
+  if (!cabeceras.length) return [];
   const out: Novedad[] = [];
   for (const c of cabeceras) {
     const prev = previos.get(c.cheque_id);
@@ -1136,7 +1159,8 @@ async function repesca(topeConsultas: number) {
     const c = await cmfPorChequeId(f.cheque_id);
     if (!c) { log.push(`${f.cheque_numero}: CMF no lo devuelve`); continue; }
     const { fila, eslabones } = cabecera(c);
-    const [n] = await detectarNovedades([fila], new Map([[fila.cheque_id, eslabones]]));
+    const previos = await previosDe([fila.cheque_id]);
+    const [n] = await detectarNovedades([fila], new Map([[fila.cheque_id, eslabones]]), previos);
     if (n) novedades.push(n);
     else log.push(`${f.cheque_numero}: fuera de la tenencia pero sin novedad que registrar`);
   }
@@ -1364,14 +1388,23 @@ serve(async (req) => {
       : await traerTodos(estadoFiltro, desde, hasta);
     const { cheques, total, log } = traido;
     const deltaIncompleto = (traido as { deltaIncompleto?: boolean }).deltaIncompleto === true;
-    const cabeceras: any[] = [];
-    const eslabonFilas: any[] = [];
+    const todas: any[] = [];
     const eslabonesPorCheque = new Map<string, Eslabon[]>();
     for (const c of cheques) {
       const { fila, eslabones } = cabecera(c);
-      cabeceras.push(fila);
+      todas.push(fila);
       eslabonesPorCheque.set(fila.cheque_id, eslabones);
-      for (const e of eslabones) {
+    }
+
+    // Se descarta la historia que arrastra el barrido sin filtro de estado: cheques
+    // que no conocemos y que ya vienen terminados. Ver esCartera().
+    const previos = await previosDe(todas.map((c) => c.cheque_id).filter(Boolean));
+    const cabeceras = todas.filter((c) => esCartera(c, previos));
+    const descartados = todas.length - cabeceras.length;
+
+    const eslabonFilas: any[] = [];
+    for (const fila of cabeceras) {
+      for (const e of eslabonesPorCheque.get(fila.cheque_id) ?? []) {
         eslabonFilas.push({
           cheque_id: fila.cheque_id, cmc7: fila.cmc7, tipo: e.tipo, orden: e.orden,
           fecha: aHoraArg(e.fecha), estado: e.estado, estado_norm: e.estado_norm, subtipo: e.subtipo,
@@ -1386,7 +1419,8 @@ serve(async (req) => {
     const incompleto = log.some((l) => l.includes("INCOMPLETA"));
     const resumen: Record<string, unknown> = {
       estado: estadoFiltro ?? "(todos)", modo: delta ? "delta" : "completo",
-      cmf_total: total, traidos: cabeceras.length, eslabones: eslabonFilas.length,
+      cmf_total: total, traidos: cabeceras.length, descartados_historia: descartados,
+      eslabones: eslabonFilas.length,
       ventanas: log, paginacion_incompleta: incompleto,
       // Un delta incompleto NO frena la escritura: lo que se trajo es correcto y
       // el upsert es idempotente. Pero hay que verlo, porque significa que puede
@@ -1397,7 +1431,7 @@ serve(async (req) => {
     // NOVEDADES. Detectar es solo lectura, así que corre también en dryRun: sirve
     // para ver qué se registraría antes de habilitarlo. Comparar TIENE que pasar
     // antes del upsert, porque el upsert pisa `estado`.
-    const novedades = await detectarNovedades(cabeceras, eslabonesPorCheque);
+    const novedades = await detectarNovedades(cabeceras, eslabonesPorCheque, previos);
     resumen.novedades_detectadas = novedades.length;
     resumen.novedades = novedades.map((n) => ({
       tipo: n.tipo, issue: n.jira_issue_key, cheque: n.cheque_numero,
