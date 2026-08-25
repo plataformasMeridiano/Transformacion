@@ -88,7 +88,6 @@ const TIPO_POR_ESTADO: Record<string, string> = {
 // seguir mirando, y los únicos que vale la pena repescar si se van de la tenencia.
 const ESTADOS_NO_FINALES = ["ACTIVO", "DEPOSITADO", "DEVOLUCION-PENDIENTE"];
 
-
 // ── Jira CHEQ ──────────────────────────────────────────────────────────────────
 const PROJECT_KEY = "CHEQ";
 const IT_ECHEQ = "10419";    // issue type ECheq
@@ -280,12 +279,35 @@ async function ventana(estado: string | null, desde: string, hasta: string,
   await ventana(estado, f(sig), hasta, acc, log, prof + 1);
 }
 
-/** Última modificación que ya tenemos cargada. Es la marca de agua del delta. */
+/**
+ * Marca de agua del delta. Vive en su propia tabla, NO en max(fecha_ult_modif).
+ *
+ * Sacarla de los datos tiene una trampa: si el delta no llega a cubrir todo el
+ * hueco, el upsert de los cheques más nuevos empuja ese max hacia adelante y el
+ * ciclo siguiente arranca desde ahí — el tramo del medio no se mira nunca más.
+ * Verificado el 2026-08-25: con la marca en el 10/08, 25 páginas llegaron al 22/08
+ * y quedó incompleto; escribir eso habría perdido 12 días de cambios.
+ */
 async function marcaDeAgua(): Promise<string | null> {
+  const [fila] = (await supa("cheques_sync_estado?select=ultima_modif&id=eq.1")) ?? [];
+  if (fila?.ultima_modif) return fila.ultima_modif;
+  // Bootstrap: si la tabla está vacía se arranca de lo que haya cargado.
   const filas: any[] = await supa(
     "procesamiento_cheques?select=fecha_ult_modif&fecha_ult_modif=not.is.null" +
     "&order=fecha_ult_modif.desc&limit=1");
   return filas?.[0]?.fecha_ult_modif ?? null;
+}
+
+/** Avanza la marca. Se llama SOLO cuando el delta cerró completo. */
+async function avanzarMarca(hasta: string | null) {
+  if (!hasta) return;
+  await supa("cheques_sync_estado?on_conflict=id", {
+    method: "POST",
+    body: JSON.stringify([{ id: 1, ultima_modif: hasta,
+                            ultima_corrida: new Date().toISOString(),
+                            actualizado_at: new Date().toISOString() }]),
+    headers: { Prefer: "resolution=merge-duplicates,return=minimal" },
+  });
 }
 
 /**
@@ -311,6 +333,7 @@ async function traerDelta(estado: string | null, margenHoras: number, topePagina
            (corteMs ? ` | corte: ${new Date(corteMs).toISOString()} (margen ${margenHoras} h)` : ""));
 
   let alcanzado = false;
+  let maxVisto: string | null = null;
   for (let p = 1; p <= topePaginas; p++) {
     const { filas } = await cmfPaginaRetry(estado, p, undefined, undefined, undefined, ORDEN_MODIF);
     if (!filas.length) {
@@ -319,6 +342,9 @@ async function traerDelta(estado: string | null, margenHoras: number, topePagina
       break;
     }
     for (const c of filas) if (c?.cheque_id) acc.set(c.cheque_id, c);
+    // La página 1 trae lo más nuevo: ese es el punto al que avanzará la marca si
+    // el delta cierra completo.
+    if (p === 1) maxVisto = aHoraArg(filas[0]?.fecha_ult_modif);
     const ultima = aHoraArg(filas[filas.length - 1]?.fecha_ult_modif);
     const ultimaMs = ultima ? Date.parse(ultima) : NaN;
     log.push(`pag ${p}: ${filas.length} filas, hasta ${String(ultima).slice(0, 19)}`);
@@ -332,7 +358,7 @@ async function traerDelta(estado: string | null, margenHoras: number, topePagina
   // recorte arbitrario del universo, no un delta.
   if (!marca) log.push("DELTA SIN MARCA: la base está vacía, correr el barrido completo");
   else if (!alcanzado) log.push(`DELTA INCOMPLETO: se agotaron las ${topePaginas} páginas sin llegar al corte`);
-  return { cheques: [...acc.values()], total: acc.size, log,
+  return { cheques: [...acc.values()], total: acc.size, log, marca, maxVisto,
            deltaIncompleto: !alcanzado || !marca };
 }
 
@@ -791,8 +817,13 @@ async function altaJira(maxIssues: number, dryRun: boolean) {
     // resetea fecha_procesamiento en un update (que es lo que hace el patrón de la
     // casa en sync-invoitrade-echeq-novedades) estas filas se re-crearían como
     // issues nuevos y tendríamos duplicados.
+    // estado_norm acotado a la CARTERA. Un barrido sin filtro de estado trae la
+    // historia (PAGADO, RECHAZADO, CADUCADO viejos) que nunca estuvo en Jira; sin
+    // esto, la primera corrida con crearJira=true les crearía issues retroactivos.
+    // Jira registra lo que está en cartera, no lo que ya terminó su ciclo.
     "estado,operacion_id&fecha_procesamiento=is.null&operacion_id=not.is.null" +
     "&jira_issue_key=is.null" +
+    `&estado_norm=in.(${ESTADOS_NO_FINALES.map((e) => `"${e}"`).join(",")})` +
     `&order=fecha_ingreso.asc&limit=${maxIssues}`);
   if (!pendientes.length) return { creados: 0, padres: 0, detalle: [] as unknown[] };
 
@@ -1402,10 +1433,23 @@ serve(async (req) => {
     });
     resumen.operaciones = agrupacion;
 
-    // 5. drenar la cola de novedades (los tipos sin webhook activo quedan pendientes)
+    // 5. avanzar la marca de agua SOLO si el delta cerró completo. Si quedó
+    //    incompleto se deja donde está: el ciclo siguiente vuelve a cubrir el mismo
+    //    terreno, que es preferible a saltearlo en silencio.
+    if (delta) {
+      const maxVisto = (traido as { maxVisto?: string | null }).maxVisto ?? null;
+      if (!deltaIncompleto && maxVisto) {
+        await avanzarMarca(maxVisto);
+        resumen.marca_avanzada_a = maxVisto;
+      } else {
+        resumen.marca_avanzada_a = "no (delta incompleto)";
+      }
+    }
+
+    // 6. drenar la cola de novedades (los tipos sin webhook activo quedan pendientes)
     resumen.envio_novedades = await enviarNovedades(topeNovedades);
 
-    // 6. alta en Jira (detrás del flag)
+    // 7. alta en Jira (detrás del flag)
     resumen.jira = crearJira ? await altaJira(maxIssues, false) : "omitido (crearJira=false)";
     resumen.ms = Date.now() - t0;
     return json(200, { ok: true, ...resumen });
