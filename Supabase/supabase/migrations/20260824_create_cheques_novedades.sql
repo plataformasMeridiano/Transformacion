@@ -64,6 +64,8 @@ insert into cheques_novedades_webhooks (tipo, url, activo, descripcion) values
    'El beneficiario rechazo el echeq. NO mueve el issue: son cheques que emitimos nosotros, '
    'no cartera.'),
   ('SALIO_DE_CARTERA', '', false,
-   'Endoso nuestro a un tercero que NO es Caja de Valores: el cheque se fue de la cartera '
-   'pero no se vendio (tipicamente se le pago a un proveedor con el). NO mueve el issue.')
+   'Hay un endoso nuestro hacia un tercero: el cheque se fue de la cartera. NO mueve el '
+   'issue y NO significa que se vendio: la venta se detecta con el BOLETO de la ALyC, igual '
+   'que con los FCE. Sirve para explicar por que el cheque dejo de aparecer.')
 on conflict (tipo) do nothing;
+

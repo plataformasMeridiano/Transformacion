@@ -88,12 +88,6 @@ const TIPO_POR_ESTADO: Record<string, string> = {
 // seguir mirando, y los únicos que vale la pena repescar si se van de la tenencia.
 const ESTADOS_NO_FINALES = ["ACTIVO", "DEPOSITADO", "DEVOLUCION-PENDIENTE"];
 
-// Vender un cheque es endosarlo a Caja de Valores, que es por donde se negocia en el
-// MAV. NO alcanza con "endoso a un tercero": endosarle el cheque a un proveedor para
-// pagarle también sale de la tenencia y no es una venta.
-// Verificado: en 1881 eslabones hay UN solo endoso nuestro hacia afuera, y es a Caja
-// de Valores — repudiado con motivo "error", o sea una venta que se deshizo.
-const CAJA_DE_VALORES_CUIT = "30554475910";
 
 // ── Jira CHEQ ──────────────────────────────────────────────────────────────────
 const PROJECT_KEY = "CHEQ";
@@ -964,18 +958,20 @@ async function detectarNovedades(cabeceras: any[],
       }
     }
 
-    // VENDIDO no es un estado de COELSA (no existe): se deduce de la cadena.
-    // Se exige estado ACEPTADO — el único endoso nuestro hacia afuera que hay en la
-    // base está REPUDIADO con motivo "error", y esa venta nunca ocurrió.
+    // El cheque se fue de la cartera: hay un endoso NUESTRO hacia un tercero que no es
+    // el depósito. Se exige ACEPTADO — el único endoso nuestro hacia afuera que hay en
+    // la base está REPUDIADO con motivo "error", o sea que nunca ocurrió.
+    //
+    // Esto NO decide que se vendió. La venta se detecta cuando llega el BOLETO de la
+    // ALyC, igual que con los FCE: COELSA solo muestra que el cheque salió, no por qué
+    // (endosarle el cheque a un proveedor para pagarle también lo saca). Por eso la
+    // novedad es informativa y no mueve el issue; sirve para explicar por qué el cheque
+    // dejó de aparecer y para corroborar la venta cuando llegue el boleto.
     const salida = (eslabonesPorCheque.get(c.cheque_id) ?? []).find(
       (e) => e.origen_cuit === MERIDIANO_CUIT && e.destino_cuit !== MERIDIANO_CUIT &&
              !e.es_deposito && (e.estado_norm === "ACEPTADO" || e.estado_norm === ""));
     if (salida) {
-      // A Caja de Valores = negociado en el MAV. A cualquier otro = salió de cartera
-      // por otra razón (típicamente pagarle a un proveedor con el cheque), que no es
-      // una venta y por eso no mueve el issue.
-      const vendido = salida.destino_cuit === CAJA_DE_VALORES_CUIT;
-      out.push({ ...base, tipo: vendido ? "VENDIDO" : "SALIO_DE_CARTERA",
+      out.push({ ...base, tipo: "SALIO_DE_CARTERA",
                  estado_anterior: prev.estado_norm, estado_nuevo: c.estado_norm,
                  detalle: { ...base.detalle, destino: salida.destino_nombre,
                             destino_cuit: salida.destino_cuit, fecha: salida.fecha } });
