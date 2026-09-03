@@ -98,6 +98,15 @@ const TIPO_POR_ESTADO: Record<string, string> = {
 // historia, así que conviene revisar `descartados_historia` cuando salta.
 const ESTADOS_NO_FINALES = ["ACTIVO", "DEPOSITADO", "PRESENTADO", "DEVOLUCION-PENDIENTE"];
 
+// Fecha en la que arrancó el flujo. Un cheque que no conocemos y que YA viene
+// terminado igual es cartera si ENTRÓ después de esta fecha: son los que pasaron por
+// nosotros y se cobraron antes de que el sync llegara a verlos.
+//
+// Filtrar solo por estado no alcanzaba. Medido el 2026-09-03 sobre dos ventanas de
+// la puesta al día: de 77 cheques descartados por estado final, 73 ($431 M) habían
+// entrado despues del 11/08 y eran cartera legítima.
+const INICIO_FLUJO = "2026-08-11";
+
 // ── Jira CHEQ ──────────────────────────────────────────────────────────────────
 const PROJECT_KEY = "CHEQ";
 const IT_ECHEQ = "10419";    // issue type ECheq
@@ -833,7 +842,8 @@ async function altaJira(maxIssues: number, dryRun: boolean) {
     // Jira registra lo que está en cartera, no lo que ya terminó su ciclo.
     "estado,operacion_id&fecha_procesamiento=is.null&operacion_id=not.is.null" +
     "&jira_issue_key=is.null" +
-    `&estado_norm=in.(${ESTADOS_NO_FINALES.map((e) => `"${e}"`).join(",")})` +
+    `&or=(estado_norm.in.(${ESTADOS_NO_FINALES.map((e) => `"${e}"`).join(",")})` +
+    `,fecha_ingreso.gte.${INICIO_FLUJO})` +
     `&order=fecha_ingreso.asc&limit=${maxIssues}`);
   if (!pendientes.length) return { creados: 0, padres: 0, detalle: [] as unknown[] };
 
@@ -986,7 +996,8 @@ async function previosDe(ids: string[]): Promise<Map<string, any>> {
  */
 const esCartera = (fila: any, previos: Map<string, any>) =>
   previos.has(fila.cheque_id) ||
-  ESTADOS_NO_FINALES.includes(String(fila.estado_norm ?? ""));
+  ESTADOS_NO_FINALES.includes(String(fila.estado_norm ?? "")) ||
+  String(fila.fecha_ingreso ?? "") >= INICIO_FLUJO;
 
 async function detectarNovedades(cabeceras: any[],
                                  eslabonesPorCheque: Map<string, Eslabon[]>,
