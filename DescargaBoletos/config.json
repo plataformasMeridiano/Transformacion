@@ -393,7 +393,7 @@
           "TOCT"
         ],
         "colocadoras_codes": [],
-        "pase_codes": [],
+        "pase_codes": ["CMAE", "VMAE"],
         "timeout_ms": 30000
       }
     }
