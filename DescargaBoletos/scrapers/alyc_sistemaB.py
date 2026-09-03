@@ -8,6 +8,7 @@ from .base_scraper import BaseScraper
 logger = logging.getLogger(__name__)
 
 _TIMEOUT = 30_000
+_ESPERA_GRILLA = 20   # segundos que se espera a que la grilla cargue tras filtrar por fecha
 
 # Códigos de tipo de operación por portal (columna de la grilla)
 # Pueden sobreescribirse con opciones["caucion_codes"] / opciones["colocadoras_codes"] en config.json
@@ -210,6 +211,38 @@ class AdcapScraper(BaseScraper):
             }}
         """)
 
+    async def _leer_filas_con_espera(self, fecha_fmt: str, intentos: int = _ESPERA_GRILLA):
+        """Lee la grilla reintentando hasta que se puebla.
+
+        La grilla se recarga sola después de aplicar el filtro de fecha, y tarda:
+        medido en Criteria, entre 5 y 15 segundos. Con una espera fija de 1 s se
+        leía siempre vacío y el scraper informaba "0 boletos" sin error — un cero
+        indistinguible de "no operó". Así se perdieron 7 cauciones de Criteria MN
+        entre el 25 y el 31/08/2026.
+
+        Cada vuelta scrollea la tabla: el portal no renderiza los íconos PDF
+        hasta que la fila es visible, y `_leer_filas` los exige.
+        """
+        page = self._page
+        for intento in range(1, intentos + 1):
+            await page.evaluate("""
+                () => {
+                    const rows = document.querySelectorAll('table tr[data-id]');
+                    if (rows.length) {
+                        rows[rows.length - 1].scrollIntoView();
+                        rows[0].scrollIntoView();
+                    }
+                }
+            """)
+            await asyncio.sleep(1)
+            filas = await self._leer_filas(fecha_fmt)
+            if filas:
+                if intento > 1:
+                    logger.info("[%s] Grilla poblada tras %d s", self.nombre, intento)
+                return filas
+        logger.info("[%s] Grilla vacía tras %d s de espera", self.nombre, intentos)
+        return []
+
     async def download_tickets(self, fecha: str, dest_dir: Path) -> list[Path]:
         """
         Descarga los boletos de la fecha indicada (YYYY-MM-DD).
@@ -273,17 +306,7 @@ class AdcapScraper(BaseScraper):
             # ── 3. Leer filas de la grilla filtrando por fecha ───────────────
             # Primero scrollear toda la tabla para forzar el lazy-rendering
             # de los íconos PDF (el portal no los renderiza hasta que son visibles)
-            await page.evaluate("""
-                () => {
-                    const rows = document.querySelectorAll('table tr[data-id]');
-                    if (rows.length) {
-                        rows[rows.length - 1].scrollIntoView();
-                        rows[0].scrollIntoView();
-                    }
-                }
-            """)
-            await asyncio.sleep(1)
-            rows = await self._leer_filas(fecha_fmt)
+            rows = await self._leer_filas_con_espera(fecha_fmt)
             logger.info("[%s] Boletos encontrados [%s]: %d",
                         self.nombre, cta_nombre or "default", len(rows))
 
