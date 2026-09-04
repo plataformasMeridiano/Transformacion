@@ -1161,20 +1161,28 @@ async function repesca(topeConsultas: number) {
   // siguen en la tenencia. Uno que está en estado final no se perdió, se liquidó, y
   // de esos cambios ya se ocupa el delta.
   for (const est of ESTADOS_NO_FINALES) {
-    let n = 0;
-    for (let p = 1; p <= 200; p += PAGINAS_EN_PARALELO) {
+    // Se calcula cuántas páginas hay y NO se pide ni una de más.
+    //
+    // Paginar "hasta que venga vacía" cuesta carísimo: cmfPaginaRetry trata la página
+    // vacía como algo a reintentar (CMF devuelve vacíos intermitentes de verdad), así
+    // que una página fuera de rango se lleva 5 intentos con backoff = ~18 s. Con 4
+    // estados eso solo eran ~96 s y la repesca moría en el IDLE_TIMEOUT de 150 s.
+    const { filas: primera, total } = await cmfPaginaRetry(
+      est, 1, undefined, undefined, "cheques.cheque_id", ORDEN_MODIF);
+    if (!total) { log.push(`${est}: 0 en tenencia`); continue; }
+    for (const c of primera) if (c?.cheque_id) enTenencia.add(c.cheque_id);
+    const paginas = Math.ceil(total / PAGE_SIZE);
+    for (let p = 2; p <= paginas; p += PAGINAS_EN_PARALELO) {
       const lote = [];
-      for (let q = p; q < p + PAGINAS_EN_PARALELO; q++) {
+      for (let q = p; q < p + PAGINAS_EN_PARALELO && q <= paginas; q++) {
         lote.push(cmfPaginaRetry(est, q, undefined, undefined,
                                  "cheques.cheque_id", ORDEN_MODIF));
       }
-      const res = await Promise.all(lote);
-      for (const { filas } of res) {
-        for (const c of filas) if (c?.cheque_id) { enTenencia.add(c.cheque_id); n++; }
+      for (const { filas } of await Promise.all(lote)) {
+        for (const c of filas) if (c?.cheque_id) enTenencia.add(c.cheque_id);
       }
-      if (res.every((r) => !r.filas.length)) break;
     }
-    log.push(`${est}: ${n} en tenencia`);
+    log.push(`${est}: ${total} en tenencia (${paginas} páginas)`);
   }
   log.push(`tenencia (estados no finales): ${enTenencia.size} cheques distintos`);
 
@@ -1388,7 +1396,9 @@ serve(async (req) => {
   if (p("repesca") === true || p("repesca") === "true") {
     if (!CMF_KEY) return json(500, { ok: false, error: "Falta env var CMF_INTERNAL_KEY" });
     const t = Date.now();
-    const r = await repesca(Number(p("topeConsultas") ?? 25));
+    // El barrido se lleva ~85 s de los 150 del isolate, así que quedan ~15 consultas
+    // por corrida. Si hay más faltantes, se corre varias veces: es idempotente.
+    const r = await repesca(Number(p("topeConsultas") ?? 15));
     return json(200, { ok: true, repesca: true, ...r, ms: Date.now() - t });
   }
 
