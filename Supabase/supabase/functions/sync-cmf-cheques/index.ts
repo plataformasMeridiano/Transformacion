@@ -31,7 +31,6 @@
 //   auditarJira true → read-only: issues y padres que Supabase no referencia
 //   sinEstado   true → mira toda la tenencia sin filtrar por estado (para novedades)
 //   enviarNovedades true → solo drena la cola de novedades pendientes
-//   repesca     true → barrido completo para detectar los que se fueron de la tenencia
 //
 // Env vars (Supabase Function secrets):
 //   SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY   (inyectadas)
@@ -91,7 +90,7 @@ const TIPO_POR_ESTADO: Record<string, string> = {
 };
 
 // Estados desde los que un cheque todavía puede cambiar. Son los que hay que
-// seguir mirando, y los únicos que vale la pena repescar si se van de la tenencia.
+// seguir mirando; los demás ya terminaron su ciclo.
 // OJO: esta lista NO es cerrada. El 2026-08-14 los estados sumaban exacto el total
 // con 7 valores y PRESENTADO no existía; apareció el 25/08 con 50 cheques. Un estado
 // desconocido que llegue acá se trata como final y el cheque se descarta como
@@ -1119,97 +1118,40 @@ async function enviarNovedades(tope: number) {
   return { enviadas, fallidas, sin_destino: sinDestino, detalle };
 }
 
-/** Un cheque puntual, sin filtrar por tenencia. Es la única forma de ver los que se fueron. */
-async function cmfPorChequeId(chequeId: string) {
-  const res = await fetch(CMF_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "x-internal-key": CMF_KEY },
-    body: JSON.stringify({
-      select: SELECT,
-      filter: `cheques.cheque_id eq __${chequeId}__`,
-      orderby: ORDEN_MODIF,
-      pag: "cheques:1-1",
-    }),
-  });
-  const body = await res.json().catch(() => ({}));
-  if (body?.cmf_code !== "2400") return null;
-  return (body?.data?.cheques ?? [])[0] ?? null;
-}
-
-/**
- * REPESCA: los cheques que se fueron de nuestra tenencia.
- *
- * Un cheque negociado deja de estar en la tenencia y por lo tanto desaparece del
- * delta — no genera novedad, simplemente se esfuma. Para verlos hay que barrer los
- * ids de la tenencia y comparar contra los nuestros que siguen en estado no final.
- *
- * Se barre ordenando por fecha_ult_modif (casi única) y NO por fecha_pago: con
- * fecha_pago las páginas se solapan y los faltantes serían falsos positivos.
- *
- * No va en el ciclo de 15 min: es un barrido completo. Corre una vez por día.
- */
-async function repesca(topeConsultas: number) {
-  const enTenencia = new Set<string>();
-  const log: string[] = [];
-  // Se barre SOLO por los estados no finales, NO la tenencia entera.
-  //
-  // Barrer todo son 4916 cheques = 246 páginas y no entra en los 150 s del isolate
-  // (medido el 2026-09-04: ~295 s secuencial). Acotado a los no finales son ~1590
-  // cheques = 80 páginas, que de a dos son ~48 s.
-  //
-  // Y además es lo correcto: lo único que importa acá es si nuestros cheques VIVOS
-  // siguen en la tenencia. Uno que está en estado final no se perdió, se liquidó, y
-  // de esos cambios ya se ocupa el delta.
-  for (const est of ESTADOS_NO_FINALES) {
-    // Se calcula cuántas páginas hay y NO se pide ni una de más.
-    //
-    // Paginar "hasta que venga vacía" cuesta carísimo: cmfPaginaRetry trata la página
-    // vacía como algo a reintentar (CMF devuelve vacíos intermitentes de verdad), así
-    // que una página fuera de rango se lleva 5 intentos con backoff = ~18 s. Con 4
-    // estados eso solo eran ~96 s y la repesca moría en el IDLE_TIMEOUT de 150 s.
-    const { filas: primera, total } = await cmfPaginaRetry(
-      est, 1, undefined, undefined, "cheques.cheque_id", ORDEN_MODIF);
-    if (!total) { log.push(`${est}: 0 en tenencia`); continue; }
-    for (const c of primera) if (c?.cheque_id) enTenencia.add(c.cheque_id);
-    const paginas = Math.ceil(total / PAGE_SIZE);
-    for (let p = 2; p <= paginas; p += PAGINAS_EN_PARALELO) {
-      const lote = [];
-      for (let q = p; q < p + PAGINAS_EN_PARALELO && q <= paginas; q++) {
-        lote.push(cmfPaginaRetry(est, q, undefined, undefined,
-                                 "cheques.cheque_id", ORDEN_MODIF));
-      }
-      for (const { filas } of await Promise.all(lote)) {
-        for (const c of filas) if (c?.cheque_id) enTenencia.add(c.cheque_id);
-      }
-    }
-    log.push(`${est}: ${total} en tenencia (${paginas} páginas)`);
-  }
-  log.push(`tenencia (estados no finales): ${enTenencia.size} cheques distintos`);
-
-  const nuestros: any[] = await supa(
-    `procesamiento_cheques?select=cheque_id,cheque_numero,estado_norm,jira_issue_key` +
-    `&estado_norm=in.(${ESTADOS_NO_FINALES.map((e) => `"${e}"`).join(",")})`) ?? [];
-  const faltantes = nuestros.filter((n) => !enTenencia.has(n.cheque_id));
-  log.push(`nuestros no finales: ${nuestros.length} | fuera de la tenencia: ${faltantes.length}`);
-
-  const novedades: Novedad[] = [];
-  for (const f of faltantes.slice(0, topeConsultas)) {
-    const c = await cmfPorChequeId(f.cheque_id);
-    if (!c) { log.push(`${f.cheque_numero}: CMF no lo devuelve`); continue; }
-    const { fila, eslabones } = cabecera(c);
-    const previos = await previosDe([fila.cheque_id]);
-    const [n] = await detectarNovedades([fila], new Map([[fila.cheque_id, eslabones]]), previos);
-    if (n) novedades.push(n);
-    else log.push(`${f.cheque_numero}: fuera de la tenencia pero sin novedad que registrar`);
-  }
-  const nuevas = await registrarNovedades(novedades);
-  return {
-    fuera_de_tenencia: faltantes.length,
-    consultados: Math.min(faltantes.length, topeConsultas),
-    novedades: novedades.length, nuevas, log,
-  };
-}
-
+// ── por qué NO hay detección por ausencia ─────────────────────────────────────
+//
+// Hubo una "repesca" que barría la tenencia y trataba a los faltantes como cheques
+// que se habían ido. Se sacó: no hace falta, y era peligrosa.
+//
+// No hace falta porque un cheque solo sale de la tenencia si NOSOTROS lo
+// transmitimos (endoso o cesión), y la tenencia recién se mueve cuando la
+// contraparte ACEPTA. Hasta entonces el eslabón ya está en la cadena y el cheque
+// sigue siendo nuestro, así que el delta lo ve y emite SALIO_DE_CARTERA. Verificado
+// con los dos casos que existen: los cheques en DEVOLUCION-PENDIENTE aparecen en la
+// consulta por tenencia, y CHEQ-1323 tenía el endoso a Caja de Valores registrado
+// estando ACTIVO. Depositar, cobrar, rechazar o caducar NO sacan el cheque.
+//
+// Era peligrosa porque la ausencia miente con una facilidad enorme. Una página
+// perdida por un 429 y un cheque que simplemente cambió de estado se ven exactamente
+// igual que uno que se fue. El 2026-09-04 eso dio 361 falsos faltantes sobre 6 reales.
+//
+// La regla general: cuando un dato se define por ausencia, hay que poder demostrar
+// que se miró TODO. Si no se puede, la ausencia no significa nada. Acá no se puede
+// (CMF rate-limitea y el barrido no entra en el isolate), así que no se usa.
+//
+// Y tampoco se puede preguntar por el otro lado: `$filter` sobre endosos, cesiones,
+// es_ultimo_endosante y beneficiario_final_documento da 2499. El único filtro sobre
+// personas es la tenencia.
+//
+// El cierre definitivo: un cheque que se fue **desaparece de la API por completo**, ni
+// siquiera se lo alcanza por su propio cheque_id. Medido el 2026-09-04 sobre 297 cheques
+// que Doors da por cerrados y que nosotros teníamos congelados en ACTIVO: 14 de 14 de una
+// muestra al azar dieron 0 resultados con `cheques.cheque_id eq __<id>__`, mientras que el
+// mismo filtro sobre cheques de la MISMA carga del 11/08 que hoy siguen en la cartera
+// resuelve bien (4 de 4). No es que el id rote ni que el filtro no sirva: CMF solo nos
+// muestra lo que tenemos. Por eso no hay repesca posible por ningún camino — ni por
+// ausencia, ni por endosante, ni por id. Lo único observable es la transmisión saliente
+// ANTES de que la tenencia se mueva, y eso ya lo captura el delta.
 
 // ── handler ────────────────────────────────────────────────────────────────────
 
@@ -1389,17 +1331,6 @@ serve(async (req) => {
     const t = Date.now();
     const envio = await enviarNovedades(topeNovedades);
     return json(200, { ok: true, enviarNovedades: true, ...envio, ms: Date.now() - t });
-  }
-
-  // Los cheques que se fueron de la tenencia (negociados). Barrido completo:
-  // corre una vez por día, NO en el ciclo de 15 min.
-  if (p("repesca") === true || p("repesca") === "true") {
-    if (!CMF_KEY) return json(500, { ok: false, error: "Falta env var CMF_INTERNAL_KEY" });
-    const t = Date.now();
-    // El barrido se lleva ~85 s de los 150 del isolate, así que quedan ~15 consultas
-    // por corrida. Si hay más faltantes, se corre varias veces: es idempotente.
-    const r = await repesca(Number(p("topeConsultas") ?? 15));
-    return json(200, { ok: true, repesca: true, ...r, ms: Date.now() - t });
   }
 
   // Alta en Jira desde lo que ya está en Supabase, SIN tocar CMF.
