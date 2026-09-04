@@ -69,14 +69,27 @@ MAX_DIAS_ATRAS = 15   # tope de recuperación, para que un checkpoint muy viejo 
 
 
 def _rango_por_defecto() -> tuple[str, str]:
-    """Rango a revisar: desde el último checkpoint hasta las 00:00 UTC de hoy.
+    """Rango a revisar: desde el último checkpoint hasta AHORA.
 
     Retomar desde el checkpoint —y no desde ayer— hace que un día fallado se
     recupere solo en la corrida siguiente. Si nunca corrió, arranca en ayer.
+
+    El corte de arriba tiene que ser `ahora` y no la medianoche de hoy: la fase
+    de descarga corre minutos antes en la misma corrida y `log_boleto` estampa
+    `fecha_descarga = now` en cada re-descarga, así que cortar en 00:00 deja
+    fuera todo lo que se acaba de bajar. Y como el cron re-descarga los últimos
+    7 días hábiles, el mismo boleto se escapaba por el borde todos los días
+    hasta envejecer: el control quedaba ciego durante una semana, que es
+    justamente cuando sirve. Pasó con 102 boletos de agosto de 2026.
+
+    El valor se calcula una sola vez y se usa para filtrar **y** para grabar el
+    checkpoint, así que lo que se registre después de la consulta cae en la
+    ventana de la corrida siguiente: contiguas, sin huecos ni solapamiento.
     """
     a_ts = lambda d: datetime.combine(d, dtime.min, tzinfo=timezone.utc).isoformat()
-    hoy = date.today()
-    hasta = a_ts(hoy)
+    ahora = datetime.now(timezone.utc)
+    hoy = ahora.date()
+    hasta = ahora.isoformat()
 
     ultimo = ultima_corrida_control()
     if not ultimo:
