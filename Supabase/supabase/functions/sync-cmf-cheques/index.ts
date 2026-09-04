@@ -1151,13 +1151,32 @@ async function cmfPorChequeId(chequeId: string) {
 async function repesca(topeConsultas: number) {
   const enTenencia = new Set<string>();
   const log: string[] = [];
-  for (let p = 1; p <= 400; p++) {
-    const { filas } = await cmfPaginaRetry(null, p, undefined, undefined,
-                                           "cheques.cheque_id", ORDEN_MODIF);
-    if (!filas.length) break;
-    for (const c of filas) if (c?.cheque_id) enTenencia.add(c.cheque_id);
+  // Se barre SOLO por los estados no finales, NO la tenencia entera.
+  //
+  // Barrer todo son 4916 cheques = 246 páginas y no entra en los 150 s del isolate
+  // (medido el 2026-09-04: ~295 s secuencial). Acotado a los no finales son ~1590
+  // cheques = 80 páginas, que de a dos son ~48 s.
+  //
+  // Y además es lo correcto: lo único que importa acá es si nuestros cheques VIVOS
+  // siguen en la tenencia. Uno que está en estado final no se perdió, se liquidó, y
+  // de esos cambios ya se ocupa el delta.
+  for (const est of ESTADOS_NO_FINALES) {
+    let n = 0;
+    for (let p = 1; p <= 200; p += PAGINAS_EN_PARALELO) {
+      const lote = [];
+      for (let q = p; q < p + PAGINAS_EN_PARALELO; q++) {
+        lote.push(cmfPaginaRetry(est, q, undefined, undefined,
+                                 "cheques.cheque_id", ORDEN_MODIF));
+      }
+      const res = await Promise.all(lote);
+      for (const { filas } of res) {
+        for (const c of filas) if (c?.cheque_id) { enTenencia.add(c.cheque_id); n++; }
+      }
+      if (res.every((r) => !r.filas.length)) break;
+    }
+    log.push(`${est}: ${n} en tenencia`);
   }
-  log.push(`tenencia: ${enTenencia.size} cheques`);
+  log.push(`tenencia (estados no finales): ${enTenencia.size} cheques distintos`);
 
   const nuestros: any[] = await supa(
     `procesamiento_cheques?select=cheque_id,cheque_numero,estado_norm,jira_issue_key` +
