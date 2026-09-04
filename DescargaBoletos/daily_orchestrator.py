@@ -22,6 +22,7 @@ import logging
 import os
 import subprocess
 import sys
+import urllib.parse
 import urllib.request
 from datetime import date, timedelta
 from pathlib import Path
@@ -33,7 +34,7 @@ load_dotenv(Path(__file__).parent / ".env")
 from batch_download import _resolve_env
 from drive_uploader import DriveUploader
 from supabase_logger import get_boletos_sin_drive, update_boleto_drive
-from jira_controller import verify_fecha, verify_cobros_fecha
+from jira_controller import verify_fecha, verify_cobros_fecha, FOLDER_TO_JIRA
 from jira_controller import business_days as _bdays
 from slack_notifier import send_resumen_fecha, send_alarm, send_info
 
@@ -132,7 +133,7 @@ def phase_reconcile(ventana_desde: str) -> bool:
 
     # Disparar webhook FCE para fechas fuera de ventana que ahora tienen Drive
     for alyc, fecha in fce_fuera_ventana:
-        url = f"{_FCE_VENTA_WEBHOOK}?fecha={fecha}&alyc={alyc}"
+        url = _url_fce(alyc, fecha)
         try:
             req = urllib.request.Request(url, method="POST", data=b"")
             with urllib.request.urlopen(req, timeout=30) as resp:
@@ -183,6 +184,18 @@ _FCE_VENTA_WEBHOOK = "https://hooks.zapier.com/hooks/catch/24963922/ujlo78k/"
 _FCE_ALYCS = {"Allaria", "ADCAP", "Dhalmore", "IEB", "DAValores"}
 
 
+def _url_fce(alyc: str, fecha: str) -> str:
+    """URL del webhook de FCE para una (ALyC, fecha).
+
+    El webhook espera el nombre **de Jira**, no el de la carpeta de descargas:
+    `DAValores` no matchea nada del lado del Zap. La traducción es la misma que
+    usa el resto del proyecto (`FOLDER_TO_JIRA`), y el nombre va urlencodeado
+    porque varios llevan espacio ("DA Valores", "Max Capital").
+    """
+    nombre = urllib.parse.quote(FOLDER_TO_JIRA.get(alyc, alyc))
+    return f"{_FCE_VENTA_WEBHOOK}?fecha={fecha}&alyc={nombre}"
+
+
 def _fce_ventas_en_disco(desde: str, hasta: str) -> list[tuple[str, str]]:
     """Devuelve lista de (alyc, fecha) que tienen PDFs en Venta FCE-eCheq en el rango."""
     downloads = SCRIPT_DIR / "downloads"
@@ -221,7 +234,7 @@ def phase_fce_ventas_zapier(desde: str, hasta: str) -> bool:
     logger.info("[fce_ventas] %d combinaciones (alyc, fecha) a disparar", len(pares))
     err = 0
     for alyc, fecha in pares:
-        url = f"{_FCE_VENTA_WEBHOOK}?fecha={fecha}&alyc={alyc}"
+        url = _url_fce(alyc, fecha)
         try:
             req = urllib.request.Request(url, method="POST", data=b"")
             with urllib.request.urlopen(req, timeout=30) as resp:
