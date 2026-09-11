@@ -12,8 +12,18 @@
 # sinEstado=true es OBLIGATORIO: filtrando por ACTIVO nunca veríamos el pase a
 # DEPOSITADO, que es justamente la novedad que se quiere detectar.
 #
-# NO se pasa crearJira: el alta de issues nuevos es una decisión aparte y se
-# dispara explícitamente. Esta corrida solo sigue lo que ya está en cartera.
+# crearJira=true da de alta en Jira los cheques nuevos, en el mismo ciclo.
+#
+# Arrancó sin eso, y fue un error: en 5 días hábiles se acumularon 322 cheques
+# por $2.170 M que estaban bien en Supabase y no existían en Jira. El alta no es
+# una decisión aparte, es parte de registrar la cartera.
+#
+# maxIssues=20 y no el default de 50: el isolate corta a los 150 s y un timeout
+# entre el create en Jira y el PATCH a Supabase es justo lo que genera
+# duplicados. Con 41 corridas por día el techo son 820 altas diarias, muy por
+# encima del ingreso real (30 a 80 por día).
+#
+# Es temporal, hasta que el alta se arme en Zapier.
 
 set -uo pipefail
 
@@ -69,7 +79,7 @@ INICIO=$(date '+%F %T')
 RESP=$(curl -sS -X POST "$SUPABASE_URL/functions/v1/sync-cmf-cheques" \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $SUPABASE_KEY" \
-  -d '{"delta":true,"sinEstado":true}' \
+  -d '{"delta":true,"sinEstado":true,"crearJira":true,"maxIssues":20}' \
   --max-time 200 -w '\n__HTTP__%{http_code}' 2>&1)
 
 HTTP=$(printf '%s' "$RESP" | sed -n 's/.*__HTTP__\([0-9]*\)$/\1/p')
@@ -84,9 +94,18 @@ except Exception: print("(respuesta no-JSON)"); raise SystemExit
 if not d.get("ok"):
     print("ERROR " + str(d.get("error"))[:200]); raise SystemExit
 env = d.get("envio_novedades") or {}
-print("traidos={} novedades={} nuevas={} enviadas={} fallidas={} sin_destino={} marca={} ms={}".format(
+# El alta tiene que verse en el log: si crea issues en silencio no hay forma de
+# auditar despues cuantos salieron de cada corrida.
+jira = d.get("jira")
+alta = "alta=omitida"
+if isinstance(jira, dict):
+    alta = "alta_creados={} alta_padres={}".format(jira.get("creados"), jira.get("padres"))
+    errores = [x for x in (jira.get("detalle") or []) if isinstance(x, dict) and x.get("error")]
+    if errores:
+        alta += " alta_errores={}".format(len(errores))
+print("traidos={} novedades={} nuevas={} enviadas={} fallidas={} sin_destino={} {} marca={} ms={}".format(
     d.get("traidos"), d.get("novedades_detectadas"), d.get("novedades_nuevas"),
-    env.get("enviadas"), env.get("fallidas"), env.get("sin_destino"),
+    env.get("enviadas"), env.get("fallidas"), env.get("sin_destino"), alta,
     d.get("marca_avanzada_a"), d.get("ms")))
 ' 2>/dev/null)
 
