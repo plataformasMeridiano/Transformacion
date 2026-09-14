@@ -80,9 +80,41 @@ def supa(path, metodo="GET", cuerpo=None, prefer=None):
         return json.loads(texto) if texto else None
 
 
+def jira_reintentando(path, intentos=4):
+    """GET a Jira aguantando errores transitorios. Devuelve None si nunca contesto.
+
+    Jira devuelve 5xx y 429 cada tanto — el 2026-09-08 fue un 522 de Cloudflare — y
+    sin esto la excepcion se propagaba y mataba la corrida entera.
+    """
+    for i in range(1, intentos + 1):
+        try:
+            _, d = jira(path)
+            return d
+        except urllib.error.HTTPError as e:
+            # 4xx que no sea 429 es un error nuestro: reintentar no lo arregla.
+            if e.code != 429 and 400 <= e.code < 500:
+                raise
+            ultimo = f"HTTP {e.code}"
+        except Exception as e:  # noqa: BLE001
+            ultimo = str(e)[:120]
+        if i < intentos:
+            time.sleep(3 * i)
+    print(f"  Jira no contesto tras {intentos} intentos ({ultimo}): {path[:80]}")
+    return None
+
+
 def estados_actuales(keys):
-    """Lee el estado de muchos issues de una, con JQL. Uno por uno son 400+ requests."""
+    """Estado actual de muchos issues, con JQL. Uno por uno son 400+ requests.
+
+    Devuelve (estados, sin_respuesta). Los dos valores son necesarios: si un lote
+    falla y se devolviera solo el mapa parcial, esos issues quedarian sin entrada,
+    o sea **indistinguibles de "el issue no existe"**, y el llamador los marcaria
+    con un error falso. Es la misma trampa de la ausencia que hizo sacar la
+    repesca: cuando un dato se define por lo que NO esta, hay que poder demostrar
+    que se miro de verdad.
+    """
     out = {}
+    sin_respuesta = set()
     for i in range(0, len(keys), 90):
         lote = keys[i:i + 90]
         jql = f"key in ({','.join(lote)})"
@@ -91,13 +123,20 @@ def estados_actuales(keys):
             url = f"search/jql?jql={urllib.parse.quote(jql)}&fields=status&maxResults=100"
             if token:
                 url += f"&nextPageToken={token}"
-            _, d = jira(url)
+            d = jira_reintentando(url)
+            if d is None:
+                # Se pierde el lote entero, no solo la pagina: sin saber que trajo
+                # la pagina anterior no se puede afirmar nada sobre ninguno.
+                sin_respuesta.update(lote)
+                for k in lote:
+                    out.pop(k, None)
+                break
             for it in d.get("issues") or []:
                 out[it["key"]] = it["fields"]["status"]["name"]
             token = d.get("nextPageToken")
             if not token:
                 break
-    return out
+    return out, sin_respuesta
 
 
 def marcar(novedad_id, aplicado_por, http_status):
@@ -127,13 +166,21 @@ def main():
         print("sin novedades pendientes que muevan issues")
         return 0
 
-    estado = estados_actuales(sorted({n["jira_issue_key"] for n in pendientes}))
+    estado, sin_respuesta = estados_actuales(
+        sorted({n["jira_issue_key"] for n in pendientes}))
 
-    movidos = ya = errores = 0
+    movidos = ya = errores = salteados = 0
     for n in pendientes:
         key = n["jira_issue_key"]
         destino = DESTINO[n["tipo"]]
         actual = estado.get(key)
+
+        # Jira no contesto por este issue. NO es lo mismo que "no existe": la
+        # novedad se deja intacta (sin sumar intentos ni escribir un error que
+        # despues confunda) y la corrida siguiente la vuelve a mirar.
+        if key in sin_respuesta:
+            salteados += 1
+            continue
 
         if actual is None:
             fallo(n, "el issue no existe o no es visible")
@@ -169,8 +216,11 @@ def main():
             fallo(n, e)
             errores += 1
 
+    # salteados va en el resumen aunque sea 0: es la unica senal de que Jira se
+    # cayo y quedo trabajo sin mirar. Si no se imprime, una corrida que no pudo
+    # hacer nada se lee igual que una donde no habia nada que hacer.
     print(f"movidos={movidos} ya_en_estado={ya} errores={errores} "
-          f"de {len(pendientes)} pendientes")
+          f"salteados={salteados} de {len(pendientes)} pendientes")
     return 1 if errores else 0
 
 
