@@ -12,9 +12,14 @@ Para cada fecha con boletos en Drive (desde 2026-01-15):
   3. Espera hasta que Supabase muestre 2 registros de ConoSur (máx. 30 min).
   4. Pasa a la siguiente fecha.
 
+Solo dispara las fechas que tienen **diferencia real** (algún boleto sin
+`jira_issue_key`): el webhook recorre las 13 ALyCs en cada disparo y volver a
+procesar una fecha ya resuelta es puro gasto de tasks de Zapier.
+
 Uso:
     python3 run_boletos_zapier.py
     python3 run_boletos_zapier.py 2026-02-01   # desde una fecha específica
+    python3 run_boletos_zapier.py 2026-02-01 2026-02-05 --forzar   # sin chequear
 """
 
 import json
@@ -22,8 +27,9 @@ import logging
 import os
 import sys
 import time
-import urllib.request
 import urllib.error
+import urllib.parse
+import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime
 from pathlib import Path
@@ -39,6 +45,7 @@ WEBHOOK_URL     = "https://hooks.zapier.com/hooks/catch/24963922/uqqfupo/"
 POLL_INTERVAL_S = 60       # segundos entre consultas a Supabase
 MAX_WAIT_S      = 30 * 60  # 30 minutos máximo por fecha
 MAX_WORKERS     = 5        # fechas procesadas en paralelo
+MAX_REPROCESOS  = 3        # igual que control_jira: más que esto, ya se alertó
 
 _FOLDER_MIME = "application/vnd.google-apps.folder"
 
@@ -166,6 +173,49 @@ def supabase_get(url: str, key: str, fecha: str) -> list[dict]:
         return []
 
 
+def fechas_con_diferencias(url: str, key: str, fechas: list[str]) -> set[str]:
+    """De `fechas`, las que tienen algún boleto descargado y todavía sin issue.
+
+    Disparar el Zap para una fecha ya procesada es gratis en resultado y caro en
+    tasks: el webhook recorre las 13 ALyCs y vuelve a crear todo. Medido sobre
+    `Procesamiento_Cauciones`, cada fecha se estaba procesando ~6 veces. Así que
+    se dispara solo si hay **diferencia real**: un boleto en
+    `procesamiento_boletos` sin `jira_issue_key`.
+
+    Se excluyen dos cosas para que una fecha no quede disparando para siempre:
+      * los tipos que este webhook no procesa — `Títulos` (sin webhook) y
+        `Venta FCE-eCheq` (va por el de la fase 4);
+      * los boletos que ya agotaron `reproceso_intentos` (el control dejó de
+        insistir y pasó a alertar), que si no mantendrían la fecha "con
+        diferencias" indefinidamente.
+
+    Ante un error de consulta devuelve todas las fechas: es preferible gastar
+    tasks de más que dejar boletos sin procesar por una falla de red.
+    """
+    if not fechas:
+        return set()
+    tipos = urllib.parse.quote('("Cauciones","Cauciones Colocadoras","Pases")', safe="()")
+    endpoint = (
+        f"{url}/rest/v1/procesamiento_boletos"
+        f"?fecha_operacion=in.({urllib.parse.quote(','.join(sorted(fechas)))})"
+        f"&jira_issue_key=is.null"
+        f"&tipo=in.{tipos}"
+        f"&reproceso_intentos=lt.{MAX_REPROCESOS}"
+        f"&select=fecha_operacion&limit=5000"
+    )
+    req = urllib.request.Request(
+        endpoint,
+        headers={"apikey": key, "Authorization": f"Bearer {key}", "Accept": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            filas = json.loads(resp.read())
+    except Exception as e:
+        logging.warning("No se pudo consultar diferencias (%s) — se procesan todas", e)
+        return set(fechas)
+    return {f["fecha_operacion"] for f in filas}
+
+
 def is_done(records: list[dict]) -> bool:
     """Retorna True si Zapier completó el procesamiento de la fecha."""
     statuses = {r.get("status") for r in records}
@@ -276,10 +326,22 @@ def main() -> int:
         logging.info("Sin fechas con boletos desde %s — nada que hacer", desde)
         return 0
 
-    logging.info("Fechas a procesar: %d  (paralelo: %d workers)", len(fechas), MAX_WORKERS)
+    # Disparar solo las fechas con diferencia real, salvo --forzar
+    if "--forzar" in sys.argv:
+        pendientes = fechas
+        logging.info("--forzar: se disparan las %d fechas sin chequear diferencias", len(fechas))
+    else:
+        con_dif = fechas_con_diferencias(supabase_url, supabase_key, fechas)
+        pendientes = [f for f in fechas if f in con_dif]
+        salteadas = [f for f in fechas if f not in con_dif]
+        if salteadas:
+            logging.info("Sin diferencias, no se disparan (%d): %s",
+                         len(salteadas), ", ".join(salteadas))
+        if not pendientes:
+            logging.info("Todas las fechas ya tienen sus issues — no se dispara el Zap")
+            return 0
 
-    pendientes = fechas
-    logging.info("Fechas a procesar: %d", len(pendientes))
+    logging.info("Fechas a procesar: %d  (paralelo: %d workers)", len(pendientes), MAX_WORKERS)
 
     # 3. Procesar en paralelo (hasta MAX_WORKERS fechas simultáneas)
     ok = err = 0

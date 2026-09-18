@@ -45,8 +45,11 @@ from slack_notifier import send_resumen_fecha, send_alarm, send_info
 SCRIPT_DIR = Path(__file__).parent
 LOG_DIR    = SCRIPT_DIR / "logs"
 
-# Cuántos días hábiles recientes verificar en Jira (cubre fines de semana largos)
-VENTANA_DIAS = 5
+# Cuántos días hábiles recientes verificar en Jira (cubre fines de semana largos).
+# Bajado de 5 a 3 el 18/09/2026 por costo de Zapier: la fase 5 dispara el webhook
+# por cada fecha de la ventana, así que cada día de más es un rebarrido completo.
+# El colchón real contra huecos lo da el --delta de la fase 1 (7 días hábiles).
+VENTANA_DIAS = 3
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
