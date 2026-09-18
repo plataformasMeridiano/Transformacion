@@ -8,8 +8,13 @@ from .base_scraper import BaseScraper
 logger = logging.getLogger(__name__)
 
 _TIMEOUT = 30_000
-_URL_SESSION = "https://virtualbroker-conosur.aunesa.com/api/auth/session"
-_API_BASE = "https://vb-back-conosur.aunesa.com/api"
+# Se llama al backend **a través del proxy del propio portal**, no directo a
+# `vb-back-conosur.aunesa.com`: desde que ConoSur migró a Auth.js el backend
+# solo acepta un bearer que el navegador ya no ve (el token vive cifrado en la
+# cookie de sesión y el Next.js lo agrega del lado servidor). Pegarle al host
+# del backend con las cookies del contexto da 401; pegarle al mismo path bajo
+# el host del portal da 200. Ver la nota en `download_tickets`.
+_API_BASE = "https://virtualbroker-conosur.aunesa.com/api"
 
 # Conceptos que identifican cauciones (columna 'concepto' de la API)
 _DEFAULT_CAUCION_CONCEPTOS = frozenset({"TOMADORA", "COLOCADORA"})
@@ -27,12 +32,14 @@ class ConoSurScraper(BaseScraper):
         5. Esperar a que la URL no contenga /auth/signin
 
     Flujo de descarga (download_tickets):
-        1. Obtener JWT desde GET /api/auth/session → accessToken
-        2. GET /api/v2/cuentas/{cuenta}/movimientos con rango ampliado (fecha + 7 días)
+        1. GET /api/v2/cuentas/{cuenta}/movimientos con rango ampliado (fecha + 7 días)
            para capturar la pata de liquidación de cauciones que cae al día siguiente
-        3. Filtrar client-side por concertacion == fecha
-        4. Por cada movimiento: GET /api/comprobantes/{quote(nro)}?formato=PDF
-        5. Guardar como dest_dir/{tipo}/{nro}.pdf
+        2. Filtrar client-side por concertacion == fecha
+        3. Por cada movimiento: GET /api/comprobantes/{quote(nro)}?formato=PDF
+        4. Guardar como dest_dir/{tipo}/{nro}.pdf
+
+        Todo va contra el host del portal (proxy de Next.js) y autentica con la
+        cookie de sesión. El backend `vb-back-conosur` responde 401 a la cookie.
 
     Configuración relevante en opciones:
         cuenta              (str)       Número de cuenta. Obligatorio (ej. "3003").
@@ -151,13 +158,11 @@ class ConoSurScraper(BaseScraper):
         fecha_fmt = fecha_dt.strftime("%d/%m/%Y")
         fecha_hasta_fmt = (fecha_dt + timedelta(days=7)).strftime("%d/%m/%Y")
 
-        # ── 1. Obtener JWT ────────────────────────────────────────────────
-        sess_resp = await page.context.request.get(_URL_SESSION)
-        sess = await sess_resp.json()
-        auth_h = {"Authorization": f"Bearer {sess['accessToken']}"}
-        logger.info("[%s] JWT obtenido", self.nombre)
-
-        # ── 2. Obtener movimientos ─────────────────────────────────────────
+        # ── 1. Obtener movimientos ─────────────────────────────────────────
+        # Autentica la cookie de sesión del contexto; no se manda bearer.
+        # Antes se sacaba de `/api/auth/session` un `accessToken`, pero ese
+        # endpoint dejó de devolverlo (hoy trae solo user/expires/roles) y el
+        # scraper moría con KeyError: 'accessToken'.
         resp = await page.context.request.get(
             f"{_API_BASE}/v2/cuentas/{self._cuenta}/movimientos",
             params={
@@ -169,7 +174,6 @@ class ConoSurScraper(BaseScraper):
                 "estado": "DIS",
                 "especie": "ARS",
             },
-            headers=auth_h,
         )
         data = await resp.json()
         all_movs = data.get("movimientos", {}).get("content", [])
@@ -237,7 +241,7 @@ class ConoSurScraper(BaseScraper):
             logger.info("[%s] Descargando %s → concepto=%r", self.nombre, nro, concepto)
 
             try:
-                r = await page.context.request.get(url, headers=auth_h, timeout=timeout)
+                r = await page.context.request.get(url, timeout=timeout)
                 body = await r.body()
 
                 if body[:4] != b"%PDF":
