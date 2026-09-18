@@ -115,7 +115,11 @@ Script específico por ALYC: `run_da_zapier.py` — dispara Zapier solo para DAV
 
 **Tabla `procesamiento_boletos` (Supabase):** registra cada PDF descargado con campos `id, fecha_operacion, alyc, tipo, nro_boleto, filename, drive_file_id, fecha_descarga`. Se inserta desde `supabase_logger.py` llamado por `main.py` y `batch_download.py` tras cada upload exitoso a Drive.
 
-**Ejecución automática diaria:** `run_daily.sh` croneado con `0 12 * * 1-6` (lunes a sábado, 9 AM Argentina). Procesa los últimos 2 días hábiles con `batch_download.py`, luego lanza Zapier con `run_boletos_zapier.py`. Usa `xvfb-run` para scrapers headless=False.
+**Ejecución automática diaria:** `daily_orchestrator.py` croneado con **`0 9 * * 1-6`** (lunes a sábado, 9 AM Argentina) más un `@reboot`. Usa `xvfb-run` para los scrapers con headless=False. `run_daily.sh` quedó obsoleto.
+
+**Una sola corrida por día desde el 18/09/2026, por costo de Zapier.** Antes corría también a las 18:00. La fase 5 dispara el webhook para los últimos `VENTANA_DIAS = 5` días hábiles **sin chequear si la fecha ya está procesada** (`process_fecha` consulta `is_done` recién después de disparar), así que cada fecha de operación se procesaba ~6 veces: medido sobre `Procesamiento_Cauciones`, una pasada cuesta ~38 filas y las fechas del medio de septiembre acumulaban ~225. Con una corrida queda en ~3. **El ahorro grande que falta es chequear `is_done` ANTES de disparar** — bajaría a ~1 pasada por fecha. Es viable porque los boletos que llegan tarde a una fecha vieja los levanta el control de la fase 7, que dispara por `(alyc, fecha)` solo para los que realmente no tienen issue. La mitad de las filas (831 de 1689 en 10 días) son `Ok - Sin archivos`: el Zap recorre todas las ALyCs porque se dispara sin filtro.
+
+> **Efecto en el control:** su diseño asumía 2 corridas por día — dispara el reproceso y confirma en la siguiente. Ahora esa confirmación tarda 24 h en vez de ~9 h, y un faltante real necesita 3 días (no 1½) para agotar `MAX_REPROCESOS` y alertar en Slack.
 
 ## Scripts de utilidad
 
@@ -133,7 +137,7 @@ Script específico por ALYC: `run_da_zapier.py` — dispara Zapier solo para DAV
 - `run_puente_fix_nombres.py` — re-descarga Puente para fechas con nombres incorrectos y limpia Drive
 - `upload_cocos_pases.py` — procesa zip de boletos Cocos, extrae nro de boleto del PDF y sube a Drive
 - `supabase_logger.py` — registra PDFs descargados en tabla `procesamiento_boletos`
-- `run_daily.sh` — script de cron diario (descarga + Zapier)
+- `run_daily.sh` — **obsoleto**, lo reemplazó `daily_orchestrator.py`
 
 ## Notas técnicas
 

@@ -14,7 +14,11 @@ Reemplaza run_daily.sh. Fases:
   8. Resumen     — tabla por fecha en Slack
 
 Uso (cron):
-    0 12 * * 1-6 cd /ruta && xvfb-run --auto-servernum python3 daily_orchestrator.py >> logs/cron.log 2>&1
+    0 9 * * 1-6 cd /ruta && xvfb-run --auto-servernum python3 daily_orchestrator.py >> logs/cron.log 2>&1
+
+Una sola corrida por día (antes había otra a las 18:00): la fase 5 dispara el
+webhook para los últimos VENTANA_DIAS hábiles sin mirar si la fecha ya está
+procesada, así que correr dos veces duplicaba tasks de Zapier sin aportar nada.
 """
 
 import json
