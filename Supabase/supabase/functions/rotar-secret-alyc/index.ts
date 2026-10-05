@@ -28,6 +28,22 @@
 // (?issueKey=...) o del body ({issueKey} / {issue.key} / {key}).
 // Flag { "dryRun": true } → resuelve todo pero NO escribe el vault, Assets ni el issue.
 //
+// Respuesta a Jira en el acto (202) y trabajo en segundo plano:
+//   La rotación tarda 30-45 s (update-secret no responde hasta republicar la
+//   página de Confluence). Jira daba el webhook por fallido y lo REINTENTABA hasta
+//   4-5 veces, con intervalos de 7-15 min: el 2026-10-05, 5 tickets → 21 escrituras
+//   al vault y 21 republicaciones. Además un reintento viejo podía pisar la clave
+//   de un ticket nuevo de la misma cuenta. Ahora se valida la firma, se contesta
+//   202 y el trabajo sigue con EdgeRuntime.waitUntil(). El resultado nunca fue la
+//   respuesta HTTP (Jira no la muestra): es el comentario + transición del ticket.
+//   Riesgo nuevo: si el proceso muere de golpe antes de cerrar, el ticket queda
+//   "En curso" sin comentario. Re-dispararlo es seguro.
+//
+// Tickets ya cerrados se ignoran: si el ticket está en la categoría "Done" (Listo,
+// Contraseña no actualizada) no se hace nada — ni vault, ni comentario. Es la red
+// de seguridad contra reintentos y disparos repetidos. Para reprocesar, volver el
+// ticket a "En curso".
+//
 // Env vars (Supabase Function secrets):
 //   JIRA_BASE_URL                     (ej. https://meridianonorte.atlassian.net)
 //   ATLASSIAN_EMAIL                   cuenta de servicio con acceso a Jira + Assets
@@ -80,6 +96,12 @@ class RotationError extends Error {
   status: number;
   constructor(status: number, message: string) { super(message); this.status = status; }
 }
+
+/** El ticket ya está cerrado: no se procesa ni se le comenta nada. */
+class TicketCerrado extends Error {}
+
+// Supabase Edge Runtime: mantiene viva la instancia hasta que termine la promesa.
+declare const EdgeRuntime: { waitUntil(p: Promise<unknown>): void } | undefined;
 
 async function hmacSha256Hex(secret: string, data: string): Promise<string> {
   const key = await crypto.subtle.importKey(
@@ -219,11 +241,18 @@ async function postUpdateSecret(secretName: string, secretValue: string, issueKe
 
 async function rotar(issueKey: string, auth: string, dryRun: boolean) {
   // 1. Traer el issue con los campos que importan
-  const campos = [...USUARIO_FIELDS, PASSWORD_FIELD, PASSWORD_CONFIRM_FIELD, DNI_FIELD, DNI_CONFIRM_FIELD].join(",");
+  const campos = ["status", ...USUARIO_FIELDS, PASSWORD_FIELD, PASSWORD_CONFIRM_FIELD, DNI_FIELD, DNI_CONFIRM_FIELD].join(",");
   const issueUrl = `${JIRA_BASE_URL}/rest/api/3/issue/${encodeURIComponent(issueKey)}?fields=${campos}`;
   const issueRes = await fetch(issueUrl, { headers: { Authorization: auth, Accept: "application/json" } });
   if (!issueRes.ok) throw new RotationError(502, `Jira issue ${issueRes.status}: ${(await issueRes.text()).slice(0, 200)}`);
   const issue = await issueRes.json();
+
+  // Ticket ya cerrado → no se toca (reintento de Jira o disparo repetido).
+  // Por categoría y no por nombre, para no depender de cómo se llame cada estado.
+  const estado = issue.fields?.status;
+  if (!dryRun && estado?.statusCategory?.key === "done") {
+    throw new TicketCerrado(`ticket ya cerrado en '${estado?.name}'`);
+  }
 
   // 2. Valores nuevos (ambos opcionales; vacío = no tocar)
   const newPassword = txt(issue.fields?.[PASSWORD_FIELD]);
@@ -277,6 +306,7 @@ async function rotar(issueKey: string, auth: string, dryRun: boolean) {
     return {
       dryRun: true,
       objectId,
+      estado: estado?.name ?? null,
       dni_actual_en_assets: attrValue(obj, DNI_ATTR_NAME) || null,
       updates: updates.map((u) => ({ campo: u.campo, secret: u.secret, value_len: u.value.length })),
     };
@@ -335,26 +365,44 @@ serve(async (req) => {
 
   const auth = "Basic " + btoa(`${ATLASSIAN_EMAIL}:${ATLASSIAN_API_TOKEN}`);
 
-  try {
-    const res = await rotar(issueKey, auth, dryRun);
-    if (dryRun) return json(200, { ok: true, issueKey, ...res });
+  // dryRun: sincrónico, para poder ver el plan en la respuesta.
+  if (dryRun) {
+    try {
+      return json(200, { ok: true, issueKey, ...(await rotar(issueKey, auth, true)) });
+    } catch (err) {
+      const status = err instanceof RotationError ? err.status : 500;
+      return json(status, { ok: false, error: err instanceof Error ? err.message : String(err) });
+    }
+  }
 
+  // Real: se contesta 202 ya y se trabaja en segundo plano (ver cabecera).
+  const trabajo = procesar(issueKey, auth);
+  if (typeof EdgeRuntime !== "undefined") {
+    EdgeRuntime.waitUntil(trabajo);
+    return json(202, { ok: true, accepted: true, issueKey });
+  }
+  return json(200, await trabajo);   // fuera del Edge Runtime (local): esperar
+});
+
+/** Rota y cierra el ticket. Nunca lanza: todo resultado queda en el ticket y en el log. */
+async function procesar(issueKey: string, auth: string) {
+  try {
+    const res = await rotar(issueKey, auth, false);
     const detalle = (res.updates as any[]).map((u) => `${u.campo} (${u.secret})`).join(" y ");
     const sync = res.assetsSync as any;
     const nota = sync && sync.ok === false ? `\n⚠️ No se pudo sincronizar '${DNI_ATTR_NAME}' en Assets: ${sync.error}` : "";
-    const jira = await cerrarIssue(
-      issueKey, auth,
-      `✅ Actualizado en Azure Key Vault: ${detalle}.${nota}`,
-      STATUS_OK,
-    );
-    return json(200, { ok: true, issueKey, ...res, jira });
+    const jira = await cerrarIssue(issueKey, auth, `✅ Actualizado en Azure Key Vault: ${detalle}.${nota}`, STATUS_OK);
+    const out = { ok: true, issueKey, ...res, jira };
+    console.log(JSON.stringify({ evento: "rotado", ...out }));
+    return out;
   } catch (err) {
-    const status = err instanceof RotationError ? err.status : 500;
     const msg = err instanceof Error ? err.message : String(err);
-    let jira: unknown = undefined;
-    if (!dryRun) {
-      jira = await cerrarIssue(issueKey, auth, `❌ No se pudo actualizar: ${msg}`, STATUS_FAIL);
+    if (err instanceof TicketCerrado) {
+      console.log(JSON.stringify({ evento: "salteado", issueKey, motivo: msg }));
+      return { ok: true, issueKey, skipped: true, motivo: msg };
     }
-    return json(status, { ok: false, error: msg, jira });
+    const jira = await cerrarIssue(issueKey, auth, `❌ No se pudo actualizar: ${msg}`, STATUS_FAIL);
+    console.error(JSON.stringify({ evento: "error", issueKey, error: msg, jira }));
+    return { ok: false, issueKey, error: msg, jira };
   }
-});
+}
