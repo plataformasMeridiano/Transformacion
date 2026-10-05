@@ -47,13 +47,17 @@ const UPDATE_SECRET_URL = Deno.env.get("UPDATE_SECRET_URL") ??
 const UPDATE_SECRET_KEY = Deno.env.get("AZURE_UPDATE_SECRET_FUNCTION_KEY") ?? "";
 const JIRA_WEBHOOK_SECRET = Deno.env.get("JIRA_WEBHOOK_UPDATEPASS_SECRET") ?? "";
 
-// Campo del issue que apunta al objeto Assets con las credenciales.
-// Sirve igual para ALYCs y para bancos: los dos issuetypes usan ESTE MISMO campo;
-// lo único que cambia es el AQL del formulario, que carga objetos de
-// "Usuarios Alycs" (typeId 119) o de "Usuarios Banco" (typeId 253). Ambos object
-// types tienen los atributos "Secret ID" y "DNI Usuario", así que la lógica es la
-// misma y no hace falta distinguirlos acá.
-const USUARIO_FIELDS = ["customfield_12178"];   // "Usuario ALyC" / "Usuario Banco" (objeto Assets)
+// Campos del issue que apuntan al objeto Assets con las credenciales, uno por
+// issuetype — NO es el mismo campo con otro AQL (eso se creyó hasta 2026-10 y
+// todos los tickets de banco fallaban con "Issue sin objeto de credenciales"):
+//   • "Cambio de Contraseña"       (10555) → "Usuario ALyC"  → «Usuarios Alycs» (119)
+//   • "Cambio de Contraseña Banco" (10588) → "Usuario Banco" → «Usuarios Banco» (253)
+// Cada ticket trae solo uno; se usa el que venga cargado. Los dos object types
+// tienen "Secret ID" y "DNI Usuario", así que el resto de la lógica es la misma.
+const USUARIO_FIELDS = [
+  "customfield_12178",  // "Usuario ALyC"
+  "customfield_12311",  // "Usuario Banco"
+];
 
 const PASSWORD_FIELD = "customfield_12211";         // "Nueva contraseña"
 const PASSWORD_CONFIRM_FIELD = "customfield_12212"; // "Confirmar nueva contraseña"
