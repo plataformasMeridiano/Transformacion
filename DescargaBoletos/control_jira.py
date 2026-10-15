@@ -41,6 +41,13 @@ logger = logging.getLogger("control_jira")
 # cierra con "Fin Proceso" sin crear nada — parece que funcionó y no hizo nada.
 _WEBHOOK_CAUCIONES = "https://hooks.zapier.com/hooks/catch/24963922/uqqfupo/"
 _WEBHOOK_FCE       = "https://hooks.zapier.com/hooks/catch/24963922/ujlo78k/"
+# El filtro `alyc` del webhook de cauciones tiene su propia lista de nombres, y no
+# siempre coincide con el de Jira: para Max Capital hay que mandar "MaxCapital" —con
+# "Max Capital" el Zap cierra en "Fin Proceso" sin crear nada—, así que sus reprocesos
+# agotaban los 3 intentos sin efecto (caución de Pamat del 21/09/2026). Solo se
+# listan las excepciones comprobadas; el resto usa el nombre de Jira.
+_NOMBRE_WEBHOOK_CAUCIONES = {"MaxCapital": "MaxCapital"}
+
 _TIPOS_FCE = {"Venta FCE-eCheq"}
 
 # Tipos que HOY se descargan pero no se procesan en Zapier: no se reprocesan ni
@@ -225,6 +232,8 @@ def controlar(desde: str, hasta: str | None = None, dry: bool = False,
 
     for i, ((alyc, fecha, canal), boletos) in enumerate(sorted(grupos.items()), 1):
         alyc_jira = FOLDER_TO_JIRA.get(alyc, alyc)
+        if canal == "Cauciones":
+            alyc_jira = _NOMBRE_WEBHOOK_CAUCIONES.get(alyc, alyc_jira)
         logger.info("[%d/%d] %s / %s / %s — %d boleto(s)",
                     i, len(grupos), alyc_jira, fecha, canal, len(boletos))
         if _disparar(alyc_jira, fecha, boletos[0]["tipo"]):
