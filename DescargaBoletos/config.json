@@ -386,14 +386,16 @@
         "tipo_operacion": [
           "Venta FCE-eCheq",
           "Cauciones",
+          "Cauciones Colocadoras",
           "Pases"
         ],
         "caucion_codes": [
           "TCC",
           "TOCT"
         ],
-        "colocadoras_codes": [],
+        "colocadoras_codes": ["CCCD", "CCTE"],
         "pase_codes": ["CMAE", "VMAE"],
+        "pase_par_codes": ["CRCN", "VRCN"],
         "timeout_ms": 30000
       }
     }

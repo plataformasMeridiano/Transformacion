@@ -73,6 +73,12 @@ class IEBScraper(BaseScraper):
                                        Default: [].
         pase_codes         (list[str]) CPTE codes para Pases. Default: [].
         titulos_codes      (list[str]) CPTE codes para Títulos. Default: [].
+        pase_par_codes     (list[str]) CPTE codes que son Pase solo si TODOS aparecen
+                                       en la misma operación (misma especie, mismo día).
+                                       Para pases sobre ONs, que usan los mismos CPTE que
+                                       los títulos sueltos (CRCN/VRCN): una compra y una
+                                       venta de la misma especie el mismo día es el roll.
+                                       Default: [].
         timeout_ms         (int)       Timeout en ms. Default: 30000.
     """
 
@@ -89,14 +95,19 @@ class IEBScraper(BaseScraper):
         self._colocad_codes = frozenset(c.upper() for c in col)  if col  is not None else _DEFAULT_COLOCAD_CODES
         self._pase_codes    = frozenset(c.upper() for c in pase) if pase is not None else _DEFAULT_PASE_CODES
         self._titulos_codes = frozenset(c.upper() for c in tit)  if tit  is not None else _DEFAULT_TITULOS_CODES
+        self._pase_par_codes = frozenset(c.upper() for c in self.opciones.get("pase_par_codes", []))
 
-    def _classify_leg(self, leg: dict, nombre: str) -> str | None:
+    def _classify_leg(self, leg: dict, nombre: str,
+                      cptes_op: frozenset = frozenset()) -> str | None:
         """Clasifica una pata de proceso=05 por su CPTE. Retorna tipo o None.
 
         `leg`    es un item de Operaciones[].Detalle[] (con CPTE, ESPE, ...).
         `nombre` es el Nombre de la operación agrupadora (especie/instrumento),
                  usado para distinguir FCE-eCheq (el CPTE VCMV también se usa en
                  otras ventas MAV).
+        `cptes_op` son los CPTE de todas las patas de la misma operación (misma
+                 especie y día): permite reconocer un pase sobre una ON, que usa
+                 los mismos códigos que los títulos sueltos.
         """
         cpte_up  = (leg.get("CPTE") or "").upper()
         nombre_up = (nombre or "").upper()
@@ -107,6 +118,9 @@ class IEBScraper(BaseScraper):
         if cpte_up in self._colocad_codes:
             return "Cauciones Colocadoras"
         if cpte_up in self._pase_codes:
+            return "Pases"
+        if (cpte_up in self._pase_par_codes
+                and self._pase_par_codes <= cptes_op):
             return "Pases"
         if cpte_up in self._titulos_codes:
             return "Títulos"
@@ -261,8 +275,10 @@ class IEBScraper(BaseScraper):
         patas: list[tuple[str, str, str]] = []
         for op in operaciones:
             nombre = op.get("Nombre", "")
+            cptes_op = frozenset((l.get("CPTE") or "").upper()
+                                 for l in op.get("Detalle", []) or [])
             for leg in op.get("Detalle", []) or []:
-                tipo = self._classify_leg(leg, nombre)
+                tipo = self._classify_leg(leg, nombre, cptes_op)
                 if tipo is None:
                     logger.debug("[%s] CPTE=%s (%s) sin clasificar, omitiendo",
                                  self.nombre, leg.get("CPTE"), nombre.strip()[:30])

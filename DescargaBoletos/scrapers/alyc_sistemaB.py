@@ -160,8 +160,14 @@ class AdcapScraper(BaseScraper):
     async def _aplicar_filtro_fecha(self, fecha_iso: str) -> None:
         """
         Aplica el filtro de fecha en la vista BOLETOS via scope Angular.
-        Abre el diálogo de filtro, setea fechaDesde y fechaHasta al mismo día,
+        Abre el diálogo de filtro, setea fechaDesde = día anterior y fechaHasta = día,
         y llama filter() — sin interactuar con el widget datepicker (evita spinner loop).
+
+        Se pide desde el día anterior porque en Criteria el filtro `fechaDesde` pasó a
+        ser **exclusivo** (~12/09/2026): con desde == hasta la vista respondía "Sin
+        registros" aunque hubiera operaciones, y el scraper informó 0 sin error durante
+        un mes. `_leer_filas` ya descarta por fecha de concertación del lado cliente,
+        así que pedir un día de más es inocuo si el portal vuelve a ser inclusivo.
 
         fecha_iso: str en formato YYYY-MM-DD.
         """
@@ -177,7 +183,8 @@ class AdcapScraper(BaseScraper):
                 const scope = angular.element(dialog).scope();
                 if (!scope?.filters) return 'no-filters';
                 const d = new Date('{fecha_iso}T12:00:00-03:00');
-                scope.filters.fechaDesde = d;
+                const antes = new Date(d.getTime() - 24 * 3600 * 1000);
+                scope.filters.fechaDesde = antes;
                 scope.filters.fechaHasta = d;
                 scope.$apply();
                 scope.filter();
