@@ -239,6 +239,7 @@
           "Venta FCE-eCheq"
         ],
         "timeout_ms": 45000,
+        "perfil_efimero": true,
         "cuentas": [
           {
             "nombre": "MeridianoNorte",

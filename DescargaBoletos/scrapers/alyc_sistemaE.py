@@ -1,5 +1,6 @@
 import asyncio
 import json
+import shutil
 import logging
 import re
 from datetime import datetime
@@ -94,6 +95,12 @@ class MaxCapitalScraper(BaseScraper):
         # solo — el formulario de Keycloak no llega a renderizar y el login
         # expira. Con el perfil se conserva la cookie `cf_clearance` entre
         # corridas y el desafío no se vuelve a plantear.
+        # `perfil_efimero`: arrancar siempre con un perfil vacío. Desde el 15/10/2026 el
+        # perfil persistente quedaba marcado por Cloudflare después de la primera
+        # corrida y el desafío no se resolvía ni con los reintentos (17 días sin bajar
+        # nada); un perfil nuevo pasa el desafío en el primer reintento.
+        if self.opciones.get("perfil_efimero"):
+            shutil.rmtree(self._profile_dir, ignore_errors=True)
         self._profile_dir.mkdir(parents=True, exist_ok=True)
         self._playwright = await async_playwright().start()
         chrome = {"executable_path": _CHROME_PATH} if Path(_CHROME_PATH).exists() else {}
@@ -240,20 +247,22 @@ class MaxCapitalScraper(BaseScraper):
             selected = False
             for idx in range(count):
                 radio   = radios.nth(idx)
-                # El label está en el párrafo/texto cercano al radio
-                parent  = radio.locator("xpath=..")
-                txt     = await parent.inner_text()
+                # El label cambió de lugar en el portal (oct-2026): antes colgaba del
+                # padre del radio, hoy el padre está vacío y el texto ("20759 -
+                # Meridiano Norte Sa") está en el abuelo. Se mira ambos.
+                txt = (await radio.locator("xpath=..").inner_text()
+                       + " " + await radio.locator("xpath=../..").inner_text())
                 if str(numero) in txt:
                     await radio.click(force=True)
                     selected = True
                     logger.info("[%s] Radio seleccionado: %s", self.nombre, txt.strip()[:60])
                     break
             if not selected:
-                logger.warning(
-                    "[%s] No se encontró radio para número %s — usando el primero",
-                    self.nombre, numero,
-                )
-                await radios.first.click(force=True)
+                # NO se cae en "el primero": eso hacía que Pamat bajara los boletos
+                # de Meridiano Norte (mismo comitente en el PDF) y que las tomas de
+                # Pamat desde el 21/09/2026 nunca se descargaran, sin ningún error.
+                logger.error("[%s] No se encontró radio para la cuenta %s", self.nombre, numero)
+                return False
         else:
             await page.locator("input[type='radio']").first.click(force=True)
 
