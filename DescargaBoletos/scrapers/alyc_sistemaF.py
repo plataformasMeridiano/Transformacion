@@ -12,6 +12,14 @@ _TIMEOUT         = 30_000
 _API_BASE        = "https://be.bancocmf.com.ar/api/v1/execute"
 _URL_METROCORP   = "https://be.bancocmf.com.ar/metrocorp"
 _URL_DESKTOP     = "https://be.bancocmf.com.ar/desktop"
+# Tras el login el portal ya no aterriza en /desktop sino en /v3/dashboard (oct-2026).
+# Se acepta cualquiera de los dos: decidir por una sola URL fue lo que dejó a este
+# scraper sin bajar nada desde junio.
+_APP_PATHS       = ("desktop", "dashboard")
+
+
+def _en_app(url: str) -> bool:
+    return any(x in url for x in _APP_PATHS)
 
 # Palabras clave en descripcionOperacion que clasifican como Cauciones
 _DEFAULT_CAUCION_KEYWORDS = frozenset({"CAUC", "COLOCACION"})
@@ -249,30 +257,34 @@ class MetroCorpScraper(BaseScraper):
         # Esperar hasta que el SPA muestre el form de login O redirija a /desktop
         # (el redirect puede ser vía pushState, sin network traffic adicional)
         await page.wait_for_function(
-            "() => window.location.pathname.includes('desktop')"
+            "() => /desktop|dashboard/.test(window.location.pathname)"
             " || !!document.querySelector('#document\\\\.number')",
             timeout=90_000,
         )
 
         # Si hay sesión activa el sitio redirecciona a /desktop
-        if "desktop" in page.url:
+        if _en_app(page.url):
             logger.info("[%s] Sesión activa detectada — reutilizando sin re-login", self.nombre)
             return True
 
         # Step 1: DNI + usuario
         logger.info("[%s] Step 1: DNI + usuario", self.nombre)
+        # Los ids de los campos cambiaron en el portal (step1.username → user,
+        # step2.password → password): se aceptan los dos nombres. Con el viejo el
+        # scraper moría en `Page.fill` sin pistas y MetroCorp quedó sin bajar nada
+        # desde junio.
         await page.wait_for_selector("#document\\.number", timeout=timeout)
         await page.fill("#document\\.number", self._dni)
-        await page.fill("#login\\.step1\\.username", self.usuario)
+        await page.fill("#user, #login\\.step1\\.username", self.usuario)
         await page.click("button[type='submit']:has-text('Continuar')")
 
         # Step 2: contraseña (el portal puede tardar > 30s en renderizar el campo)
         logger.info("[%s] Step 2: contraseña", self.nombre)
-        await page.wait_for_selector("#login\\.step2\\.password", timeout=max(timeout, 60_000))
-        await page.fill("#login\\.step2\\.password", self.contrasena)
+        await page.wait_for_selector("#password, #login\\.step2\\.password", timeout=max(timeout, 60_000))
+        await page.fill("#password, #login\\.step2\\.password", self.contrasena)
         await page.click("button[type='submit']:has-text('Ingresar')")
 
-        await page.wait_for_url(lambda u: "desktop" in u, timeout=timeout)
+        await page.wait_for_url(lambda u: _en_app(u), timeout=timeout)
         await page.wait_for_timeout(5000)
 
         logger.info("[%s] Login exitoso — URL: %s", self.nombre, page.url)
@@ -288,7 +300,7 @@ class MetroCorpScraper(BaseScraper):
         """
         page = self._page
         # Asegurarse de estar en una página con el header (ej: /desktop o /metrocorp)
-        if "desktop" not in page.url and "metrocorp" not in page.url:
+        if not _en_app(page.url) and "metrocorp" not in page.url:
             await page.goto(_URL_DESKTOP, wait_until="networkidle", timeout=timeout)
             await page.wait_for_timeout(1000)
 
@@ -323,7 +335,7 @@ class MetroCorpScraper(BaseScraper):
         # force=True necesario: el div.drawer-content-inner intercepta pointer events
         await target.click(force=True, timeout=timeout)
 
-        await page.wait_for_url(lambda u: "desktop" in u, timeout=timeout)
+        await page.wait_for_url(lambda u: _en_app(u), timeout=timeout)
         await page.wait_for_timeout(2000)
 
     # ── Descarga ─────────────────────────────────────────────────────────────
