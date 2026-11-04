@@ -386,20 +386,24 @@ class MetroCorpScraper(BaseScraper):
             cta_nombre   = cuenta.get("nombre", "")
 
             # ── 1. Cambiar ambiente si corresponde ────────────────────────────
-            if display_name:
-                # Navegar a /desktop antes de cada switch para re-inicializar el SPA.
-                # Sin esto, el dropdown de ambientes se degrada después de ~3 min.
-                await page.goto(_URL_DESKTOP, wait_until="networkidle", timeout=timeout)
-                await page.wait_for_timeout(2000)
-                logger.info("[%s] Cambiando a ambiente '%s'",
-                            self.nombre, display_name)
-                await self._switch_environment(display_name, timeout)
-
-            # ── 2. Activar el contexto de sesión en /metrocorp ────────────────
-            logger.info("[%s] Navegando a /metrocorp [%s]",
-                        self.nombre, cta_nombre or "default")
-            await page.goto(_URL_METROCORP, wait_until="networkidle", timeout=timeout)
-            await page.wait_for_timeout(2000)
+            # El dropdown de ambientes del portal /v3 cambió y ya no se puede usar
+            # (hoy falla cada fecha con "Dropdown no disponible"), pero no hace falta:
+            # `metrocorp.list` y `metrocorp.detail` toman el ambiente del body
+            # (`principalAccount` + `idEnvironment`) y responden por cuenta con solo el
+            # bearer del login. Verificado 4/11/2026: MN trae el cierre de caución del
+            # 3/6 (boleto 14111) y Pamat devuelve vacío en esa misma fecha. El cambio
+            # por UI queda como intento opcional (`cambiar_ambiente_ui`).
+            if display_name and self.opciones.get("cambiar_ambiente_ui"):
+                try:
+                    await page.goto(_URL_DESKTOP, wait_until="networkidle", timeout=timeout)
+                    await page.wait_for_timeout(2000)
+                    logger.info("[%s] Cambiando a ambiente '%s'", self.nombre, display_name)
+                    await self._switch_environment(display_name, timeout)
+                    await page.goto(_URL_METROCORP, wait_until="networkidle", timeout=timeout)
+                    await page.wait_for_timeout(2000)
+                except Exception as exc:
+                    logger.warning("[%s] No se pudo cambiar de ambiente por la UI (%s) — "
+                                   "se sigue por API", self.nombre, type(exc).__name__)
 
             # ── 3. Obtener movimientos del día ────────────────────────────────
             logger.info("[%s] Consultando movimientos para %s [%s]",
