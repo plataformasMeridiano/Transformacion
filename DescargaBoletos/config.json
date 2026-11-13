@@ -377,7 +377,7 @@
     {
       "nombre": "IEB",
       "sistema": "ieb",
-      "activo": true,
+      "activo": false,
       "url_login": "https://clientesv2.invertirenbolsa.com.ar/",
       "documento": "${IEB_DOCUMENTO}",
       "usuario": "${IEB_USUARIO}",
