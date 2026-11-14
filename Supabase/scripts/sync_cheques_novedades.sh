@@ -2,7 +2,8 @@
 # sync_cheques_novedades.sh — disparo periódico de sync-cmf-cheques en modo delta.
 #
 # Trae de CMF/COELSA lo que cambió desde la marca de agua, lo sincroniza en
-# Supabase, detecta las novedades de estado y drena la cola de webhooks.
+# Supabase y detecta las novedades de estado. Después exporta la cartera y las
+# novedades a dos CSV en el Shared Drive (ver exportar_cheques_csv.py).
 #
 # Cron en la VM (días hábiles, 08:00 a 18:00 hora Argentina — la VM ya está en
 # America/Argentina/Buenos_Aires, así que los horarios se escriben en local):
@@ -12,18 +13,15 @@
 # sinEstado=true es OBLIGATORIO: filtrando por ACTIVO nunca veríamos el pase a
 # DEPOSITADO, que es justamente la novedad que se quiere detectar.
 #
-# crearJira=true da de alta en Jira los cheques nuevos, en el mismo ciclo.
+# JIRA ESTÁ APAGADO desde el 2026-11-13: no se pasa crearJira (no se crean issues)
+# y se sacó el puente que transicionaba issues. Lo que antes iba a Jira ahora va a
+# CSV: la cartera reemplaza a los issues y las novedades a las transiciones. Los
+# issues existentes quedan congelados en el estado que tenían ese día.
 #
-# Arrancó sin eso, y fue un error: en 5 días hábiles se acumularon 322 cheques
-# por $2.170 M que estaban bien en Supabase y no existían en Jira. El alta no es
-# una decisión aparte, es parte de registrar la cartera.
-#
-# maxIssues=20 y no el default de 50: el isolate corta a los 150 s y un timeout
-# entre el create en Jira y el PATCH a Supabase es justo lo que genera
-# duplicados. Con 41 corridas por día el techo son 820 altas diarias, muy por
-# encima del ingreso real (30 a 80 por día).
-#
-# Es temporal, hasta que el alta se arme en Zapier.
+# Lo que NO hay que olvidar si se vuelve a prender el alta en algún destino: el
+# alta es parte de registrar la cartera, no una decisión aparte. Cuando el cron
+# arrancó sin crearJira se acumularon 322 cheques por $2.170 M que no estaban en
+# ningún lado visible.
 
 set -uo pipefail
 
@@ -79,7 +77,7 @@ INICIO=$(date '+%F %T')
 RESP=$(curl -sS -X POST "$SUPABASE_URL/functions/v1/sync-cmf-cheques" \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $SUPABASE_KEY" \
-  -d '{"delta":true,"sinEstado":true,"crearJira":true,"maxIssues":20}' \
+  -d '{"delta":true,"sinEstado":true}' \
   --max-time 200 -w '\n__HTTP__%{http_code}' 2>&1)
 
 HTTP=$(printf '%s' "$RESP" | sed -n 's/.*__HTTP__\([0-9]*\)$/\1/p')
@@ -116,14 +114,12 @@ else
   echo "    $(printf '%s' "$CUERPO" | head -c 600)" >> "$LOG"
 fi
 
-# ── PUENTE TEMPORAL ───────────────────────────────────────────────────────────
-# El flujo definitivo es webhook por tipo. Mientras esos webhooks no existan, las
-# novedades quedan en la cola y el issue de Jira no se entera de nada. Este paso
-# las drena moviendo el issue con las transiciones provisorias del workflow.
-#
-# CUANDO LOS WEBHOOKS ESTEN ACTIVOS, BORRAR ESTE BLOQUE. La columna
-# cheques_novedades.aplicado_por deja registrado qué se movió por acá.
-if [[ -x "$SCRIPT_DIR/aplicar_transiciones_cheques.py" ]]; then
-  TRANS=$("$SCRIPT_DIR/aplicar_transiciones_cheques.py" 2>&1)
-  echo "$INICIO PUENTE $(printf '%s' "$TRANS" | tail -1)" >> "$LOG"
+# ── EXPORTACIÓN A CSV ─────────────────────────────────────────────────────────
+# Regenera cartera_cheques.csv y novedades_cheques.csv en el Shared Drive
+# "Boletos", carpeta "Cheques COELSA". Corre aunque el sync haya fallado: lo que
+# ya está en Supabase sigue siendo correcto, y el CSV es una proyección de eso.
+# Paso intermedio: el destino definitivo es Google Sheets.
+if [[ -x "$SCRIPT_DIR/exportar_cheques_csv.py" ]]; then
+  CSVOUT=$("$SCRIPT_DIR/exportar_cheques_csv.py" 2>&1)
+  echo "$INICIO CSV  $(printf '%s' "$CSVOUT" | tail -1)" >> "$LOG"
 fi
